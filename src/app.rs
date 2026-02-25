@@ -175,7 +175,7 @@ fn run_tui(db: &Database) -> Result<()> {
     let mut items = db.list_seen()?;
     let mut table_state = TableState::default();
     table_state.select((!items.is_empty()).then_some(0));
-    let mut action = TuiAction::Replay;
+    let mut action = TuiAction::Next;
     let mut status = if items.is_empty() {
         "No tracked entries yet. Run `anitrack start` first.".to_string()
     } else {

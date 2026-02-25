@@ -29,7 +29,7 @@ This project does not replace `ani-cli`; it orchestrates and extends the workflo
 - `anitrack tui`
   - Opens an interactive terminal UI with tracked shows (latest first)
   - `Up/Down` selects show
-  - `Left/Right` selects action (`Next` / `Replay`, default `Replay`)
+- `Left/Right` selects action (`Next` / `Replay`, default `Next`)
   - `Enter` runs the selected action for the selected show
   - `q` quits
 
