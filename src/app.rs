@@ -13,9 +13,9 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 use ratatui::{Frame, Terminal};
 
 use crate::cli::{Cli, Command};
@@ -36,11 +36,11 @@ pub fn run(cli: Cli) -> Result<()> {
     let db = open_db()?;
 
     match cli.command {
-        Command::Start => run_start(&db)?,
-        Command::Next => run_next(&db)?,
-        Command::Replay => run_replay(&db)?,
-        Command::List => run_list(&db)?,
-        Command::Tui => run_tui(&db)?,
+        Some(Command::Start) => run_start(&db)?,
+        Some(Command::Next) => run_next(&db)?,
+        Some(Command::Replay) => run_replay(&db)?,
+        Some(Command::List) => run_list(&db)?,
+        Some(Command::Tui) | None => run_tui(&db)?,
     }
 
     Ok(())
@@ -66,7 +66,14 @@ fn run_next(db: &Database) -> Result<()> {
             println!("  Title: {}", item.title);
             println!("  Episode: {}", next);
 
-            let outcome = run_ani_cli_continue(&item, current)?;
+            let outcome = match run_ani_cli_continue(&item, current) {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    println!("ani-cli launch failed: {err}");
+                    println!("Progress not updated.");
+                    return Ok(());
+                }
+            };
             if outcome.success {
                 let updated_ep = outcome.final_episode.unwrap_or(next);
                 db.upsert_seen(&item.ani_id, &item.title, &updated_ep.to_string())?;
@@ -95,10 +102,18 @@ fn run_replay(db: &Database) -> Result<()> {
 
             let outcome = if current > 1 {
                 // ani-cli -c plays the episode after what's in history.
-                run_ani_cli_continue(&item, current - 1)?
+                run_ani_cli_continue(&item, current - 1)
             } else {
                 // Episode 1 cannot be represented as "previous" in history; run explicit query.
-                run_ani_cli_episode_with_global_tracking(&item, 1)?
+                run_ani_cli_episode_with_global_tracking(&item, 1)
+            };
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    println!("ani-cli launch failed: {err}");
+                    println!("Progress not updated.");
+                    return Ok(());
+                }
             };
             if outcome.success {
                 let updated_ep = outcome.final_episode.unwrap_or(current);
@@ -145,6 +160,12 @@ enum TuiAction {
     Replay,
 }
 
+#[derive(Debug, Clone)]
+struct PendingDelete {
+    ani_id: String,
+    title: String,
+}
+
 fn run_tui(db: &Database) -> Result<()> {
     let mut session = TuiSession::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))
@@ -155,15 +176,24 @@ fn run_tui(db: &Database) -> Result<()> {
     let mut table_state = TableState::default();
     table_state.select((!items.is_empty()).then_some(0));
     let mut action = TuiAction::Next;
+    let mut pending_delete = None::<PendingDelete>;
     let mut status = if items.is_empty() {
-        "No tracked entries yet. Run `anitrack start` first.".to_string()
+        status_info("No tracked entries yet. Press `s` to search or run `anitrack start`.")
     } else {
-        "Use Up/Down to select show. Left=Next, Right=Replay. Enter runs action. s=Search. q quits."
-            .to_string()
+        status_info("Ready.")
     };
 
     loop {
-        terminal.draw(|frame| draw_tui(frame, &items, &mut table_state, action, &status))?;
+        terminal.draw(|frame| {
+            draw_tui(
+                frame,
+                &items,
+                &mut table_state,
+                action,
+                &status,
+                pending_delete.as_ref(),
+            )
+        })?;
 
         if !event::poll(Duration::from_millis(200))? {
             continue;
@@ -173,6 +203,34 @@ fn run_tui(db: &Database) -> Result<()> {
             continue;
         };
         if key.kind != KeyEventKind::Press {
+            continue;
+        }
+
+        if let Some(dialog) = pending_delete.as_ref() {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    let deleting_id = dialog.ani_id.clone();
+                    let deleting_title = dialog.title.clone();
+                    pending_delete = None;
+                    match db.delete_seen(&deleting_id) {
+                        Ok(true) => {
+                            status =
+                                status_info(&format!("Deleted tracked entry: {deleting_title}"));
+                            refresh_items(db, &mut items, &mut table_state, None)?;
+                        }
+                        Ok(false) => {
+                            status = status_error("Delete failed: entry no longer exists.");
+                            refresh_items(db, &mut items, &mut table_state, None)?;
+                        }
+                        Err(err) => status = status_error(&format!("Delete failed: {err}")),
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('n') => {
+                    pending_delete = None;
+                    status = status_info("Delete canceled.");
+                }
+                _ => {}
+            }
             continue;
         }
 
@@ -186,18 +244,10 @@ fn run_tui(db: &Database) -> Result<()> {
 
                 match result {
                     Ok((msg, changed_id)) => {
-                        status = msg;
-                        items = db.list_seen()?;
-                        if items.is_empty() {
-                            table_state.select(None);
-                        } else if let Some(id) = changed_id {
-                            let idx = items.iter().position(|item| item.ani_id == id).unwrap_or(0);
-                            table_state.select(Some(idx));
-                        } else {
-                            table_state.select(table_state.selected().or(Some(0)));
-                        }
+                        status = status_info(&msg);
+                        refresh_items(db, &mut items, &mut table_state, changed_id.as_deref())?;
                     }
-                    Err(err) => status = format!("Search failed: {err}"),
+                    Err(err) => status = status_error(&format!("Search failed: {err}")),
                 }
             }
             KeyCode::Up => {
@@ -215,6 +265,22 @@ fn run_tui(db: &Database) -> Result<()> {
             }
             KeyCode::Left => action = TuiAction::Next,
             KeyCode::Right => action = TuiAction::Replay,
+            KeyCode::Char('d') => {
+                let Some(selected) = table_state.selected() else {
+                    status = status_error("Delete failed: no entry selected.");
+                    continue;
+                };
+                if selected >= items.len() {
+                    status = status_error("Delete failed: invalid selection.");
+                    continue;
+                }
+                let selected_item = &items[selected];
+                pending_delete = Some(PendingDelete {
+                    ani_id: selected_item.ani_id.clone(),
+                    title: selected_item.title.clone(),
+                });
+                status = status_info("Confirm delete: y/Enter to delete, n/Esc to cancel.");
+            }
             KeyCode::Enter => {
                 let Some(selected) = table_state.selected() else {
                     continue;
@@ -232,20 +298,13 @@ fn run_tui(db: &Database) -> Result<()> {
                 terminal.clear()?;
 
                 match result {
-                    Ok(msg) => status = msg,
-                    Err(err) => status = format!("Action failed for {selected_title}: {err}"),
+                    Ok(msg) => status = status_info(&msg),
+                    Err(err) => {
+                        status = status_error(&format!("Action failed for {selected_title}: {err}"))
+                    }
                 }
 
-                items = db.list_seen()?;
-                if items.is_empty() {
-                    table_state.select(None);
-                } else {
-                    let idx = items
-                        .iter()
-                        .position(|item| item.ani_id == selected_id)
-                        .unwrap_or(0);
-                    table_state.select(Some(idx));
-                }
+                refresh_items(db, &mut items, &mut table_state, Some(&selected_id))?;
             }
             _ => {}
         }
@@ -262,12 +321,14 @@ fn draw_tui(
     table_state: &mut TableState,
     action: TuiAction,
     status: &str,
+    pending_delete: Option<&PendingDelete>,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(8),
+            Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(3),
         ])
@@ -320,16 +381,90 @@ fn draw_tui(
         TuiAction::Next => "[Next]  Replay",
         TuiAction::Replay => "Next  [Replay]",
     };
-    let action_widget = Paragraph::new(action_text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Action (Left/Right, Enter to run)"),
-    );
+    let action_widget =
+        Paragraph::new(action_text).block(Block::default().borders(Borders::ALL).title("Action"));
     frame.render_widget(action_widget, chunks[2]);
 
     let status_widget = Paragraph::new(status.to_string())
         .block(Block::default().borders(Borders::ALL).title("Status"));
     frame.render_widget(status_widget, chunks[3]);
+
+    let footer = Paragraph::new(
+        "Keys: Up/Down move | Left/Right action | Enter run | s search | d delete | q quit",
+    )
+    .alignment(Alignment::Center)
+    .block(Block::default().borders(Borders::ALL).title("Key Hints"));
+    frame.render_widget(footer, chunks[4]);
+
+    if let Some(confirm) = pending_delete {
+        let popup_area = centered_rect(70, 18, frame.area());
+        frame.render_widget(Clear, popup_area);
+        let popup_text = format!(
+            "Delete tracked entry?\n{}\n\nPress y/Enter to confirm, n/Esc to cancel.",
+            truncate(&confirm.title, 56)
+        );
+        let popup = Paragraph::new(popup_text)
+            .alignment(Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Confirm Delete"),
+            );
+        frame.render_widget(popup, popup_area);
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
+}
+
+fn refresh_items(
+    db: &Database,
+    items: &mut Vec<crate::db::SeenEntry>,
+    table_state: &mut TableState,
+    preferred_id: Option<&str>,
+) -> Result<()> {
+    *items = db.list_seen()?;
+    if items.is_empty() {
+        table_state.select(None);
+        return Ok(());
+    }
+
+    if let Some(id) = preferred_id
+        && let Some(idx) = items.iter().position(|item| item.ani_id == id)
+    {
+        table_state.select(Some(idx));
+        return Ok(());
+    }
+
+    match table_state.selected() {
+        Some(selected) => table_state.select(Some(selected.min(items.len() - 1))),
+        None => table_state.select(Some(0)),
+    }
+    Ok(())
+}
+
+fn status_info(msg: &str) -> String {
+    format!("INFO: {msg}")
+}
+
+fn status_error(msg: &str) -> String {
+    format!("ERROR: {msg}")
 }
 
 fn run_selected_action(
@@ -533,19 +668,30 @@ fn run_interactive_cmd(mut cmd: ProcessCommand) -> Result<ExitStatus> {
 
 fn run_ani_cli_search(db: &Database) -> Result<(String, Option<String>)> {
     let histfile = ani_cli_histfile();
-    let before = read_hist_map(&histfile)?;
+    let before_read = read_hist_map(&histfile);
+    let before = before_read.entries;
+    let mut warnings = before_read.warnings;
 
     let ani_cli_bin = resolve_ani_cli_bin();
-    let status = with_sigint_ignored(|| {
+    let status = match with_sigint_ignored(|| {
         let mut cmd = ProcessCommand::new(&ani_cli_bin);
         cmd.stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
         run_interactive_cmd(cmd)
             .with_context(|| format!("failed to launch {}", ani_cli_bin.display()))
-    })?;
+    }) {
+        Ok(status) => status,
+        Err(err) => {
+            let mut message = format!("ani-cli failed to start: {err}. Progress unchanged.");
+            append_history_warnings(&mut message, &warnings);
+            return Ok((message, None));
+        }
+    };
 
-    let after = read_hist_map(&histfile)?;
+    let after_read = read_hist_map(&histfile);
+    warnings.extend(after_read.warnings);
+    let after = after_read.entries;
     let mut changed_id = None;
     let mut message = if let Some(changed) = detect_changed(&before, &after) {
         db.upsert_seen(&changed.id, &changed.title, &changed.ep)?;
@@ -562,6 +708,7 @@ fn run_ani_cli_search(db: &Database) -> Result<(String, Option<String>)> {
         message = format!("{message}\nani-cli exited with status: {status}");
     }
 
+    append_history_warnings(&mut message, &warnings);
     Ok((message, changed_id))
 }
 
@@ -602,7 +749,12 @@ fn run_ani_cli_continue(
         .status()
         .with_context(|| format!("failed to launch {}", ani_cli_bin.display()))?;
     let final_episode = if status.success() {
-        read_hist_map(&histfile)?
+        let hist_read = read_hist_map(&histfile);
+        for warning in hist_read.warnings {
+            eprintln!("Warning: {warning}");
+        }
+        hist_read
+            .entries
             .get(&item.ani_id)
             .and_then(|entry| parse_episode_u32(&entry.ep))
     } else {
@@ -634,11 +786,19 @@ fn run_ani_cli_episode_with_global_tracking(
     episode: u32,
 ) -> Result<PlaybackOutcome> {
     let histfile = ani_cli_histfile();
-    let before = read_hist_map(&histfile)?;
+    let before_read = read_hist_map(&histfile);
+    for warning in before_read.warnings {
+        eprintln!("Warning: {warning}");
+    }
+    let before = before_read.entries;
     let success = run_ani_cli_episode(&sanitize_title_for_search(&item.title), episode)?;
     let final_episode = if success {
-        let after = read_hist_map(&histfile)?;
-        after
+        let after_read = read_hist_map(&histfile);
+        for warning in after_read.warnings {
+            eprintln!("Warning: {warning}");
+        }
+        after_read
+            .entries
             .get(&item.ani_id)
             .or_else(|| before.get(&item.ani_id))
             .and_then(|entry| parse_episode_u32(&entry.ep))
@@ -680,45 +840,82 @@ fn ani_cli_histfile() -> PathBuf {
     state_home.join("ani-cli").join("ani-hsts")
 }
 
-fn read_hist_map(path: &Path) -> Result<HashMap<String, HistEntry>> {
+#[derive(Debug, Default)]
+struct HistRead {
+    entries: HashMap<String, HistEntry>,
+    warnings: Vec<String>,
+}
+
+fn read_hist_map(path: &Path) -> HistRead {
     if !path.exists() {
-        return Ok(HashMap::new());
+        return HistRead::default();
     }
 
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("failed to read ani-cli history at {}", path.display()))?;
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            return HistRead {
+                entries: HashMap::new(),
+                warnings: vec![format!(
+                    "failed to read ani-cli history at {}: {}",
+                    path.display(),
+                    err
+                )],
+            };
+        }
+    };
 
+    let (entries, skipped_lines) = parse_hist_map(&raw);
+    let mut warnings = Vec::new();
+    if skipped_lines > 0 {
+        warnings.push(format!(
+            "ignored {skipped_lines} malformed line(s) in {}",
+            path.display()
+        ));
+    }
+
+    HistRead { entries, warnings }
+}
+
+fn parse_hist_map(raw: &str) -> (HashMap<String, HistEntry>, usize) {
     let mut map = HashMap::new();
+    let mut skipped_lines = 0;
     for line in raw.lines() {
-        if line.trim().is_empty() {
-            continue;
+        match parse_hist_line(line) {
+            Some(entry) => {
+                map.insert(entry.id.clone(), entry);
+            }
+            None if !line.trim().is_empty() => skipped_lines += 1,
+            None => {}
         }
-        let mut parts = line.splitn(3, '\t');
-        let ep = match parts.next() {
-            Some(v) => v.trim(),
-            None => continue,
-        };
-        let id = match parts.next() {
-            Some(v) => v.trim(),
-            None => continue,
-        };
-        let title = match parts.next() {
-            Some(v) => v.trim(),
-            None => continue,
-        };
-        if ep.is_empty() || id.is_empty() || title.is_empty() {
-            continue;
-        }
-        map.insert(
-            id.to_string(),
-            HistEntry {
-                ep: ep.to_string(),
-                id: id.to_string(),
-                title: title.to_string(),
-            },
-        );
     }
-    Ok(map)
+    (map, skipped_lines)
+}
+
+fn parse_hist_line(line: &str) -> Option<HistEntry> {
+    if line.trim().is_empty() {
+        return None;
+    }
+    let mut parts = line.splitn(3, '\t');
+    let ep = parts.next()?.trim();
+    let id = parts.next()?.trim();
+    let title = parts.next()?.trim();
+    if ep.is_empty() || id.is_empty() || title.is_empty() {
+        return None;
+    }
+
+    Some(HistEntry {
+        ep: ep.to_string(),
+        id: id.to_string(),
+        title: title.to_string(),
+    })
+}
+
+fn append_history_warnings(message: &mut String, warnings: &[String]) {
+    for warning in warnings {
+        message.push_str("\nWarning: ");
+        message.push_str(warning);
+    }
 }
 
 fn detect_changed(
@@ -761,4 +958,56 @@ fn sanitize_title_for_search(title: &str) -> String {
 
 fn parse_episode_u32(ep: &str) -> Option<u32> {
     ep.trim().parse::<u32>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_hist_line_accepts_valid_format() {
+        let entry = parse_hist_line("12\tshow-123\tShow Title").expect("line should parse");
+        assert_eq!(entry.ep, "12");
+        assert_eq!(entry.id, "show-123");
+        assert_eq!(entry.title, "Show Title");
+    }
+
+    #[test]
+    fn parse_hist_map_ignores_malformed_lines() {
+        let raw = "1\tid-1\tShow One\nbadline\n\tid-2\tMissing episode\n2\tid-2\tShow Two\n";
+        let (parsed, skipped) = parse_hist_map(raw);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(skipped, 2);
+        assert_eq!(
+            parsed.get("id-2").map(|entry| entry.title.as_str()),
+            Some("Show Two")
+        );
+    }
+
+    #[test]
+    fn detect_changed_returns_new_or_updated_entry() {
+        let mut before = HashMap::new();
+        before.insert(
+            "id-1".to_string(),
+            HistEntry {
+                ep: "1".to_string(),
+                id: "id-1".to_string(),
+                title: "Show One".to_string(),
+            },
+        );
+
+        let mut after = HashMap::new();
+        after.insert(
+            "id-1".to_string(),
+            HistEntry {
+                ep: "2".to_string(),
+                id: "id-1".to_string(),
+                title: "Show One".to_string(),
+            },
+        );
+
+        let changed = detect_changed(&before, &after).expect("entry should be detected as changed");
+        assert_eq!(changed.id, "id-1");
+        assert_eq!(changed.ep, "2");
+    }
 }

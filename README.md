@@ -19,6 +19,8 @@ ani-cli --help
 ```
 
 ## Commands
+- `anitrack`
+  - Opens the TUI (default command)
 - `anitrack start`
   - Runs `ani-cli`
   - Reads `ani-cli` history before and after playback
@@ -39,11 +41,13 @@ ani-cli --help
   - `Up/Down` selects show
   - `Left/Right` selects action (`Next` / `Replay`, default `Next`)
   - `s` launches search (runs `ani-cli` UI and returns to the TUI after exit)
+  - `d` deletes selected tracked entry (with confirmation prompt)
   - `Enter` runs the selected action for the selected show
   - `q` quits
 
 ## Usage
 ```bash
+cargo run
 cargo run -- start
 cargo run -- next
 cargo run -- replay
