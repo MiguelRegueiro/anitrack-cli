@@ -9,6 +9,7 @@ use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
+use chrono::DateTime;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -424,7 +425,7 @@ fn draw_tui(
                         .unwrap_or_else(|| "-".to_string()),
                 ),
                 Cell::from(item.last_episode.clone()),
-                Cell::from(item.last_seen_at.clone()),
+                Cell::from(format_last_seen_display(&item.last_seen_at)),
             ])
         })
         .collect();
@@ -477,7 +478,7 @@ fn draw_tui(
                     truncate(&title, 40),
                     episode_progress_text,
                     truncate(&item.ani_id, 28),
-                    item.last_seen_at,
+                    format_last_seen_display(&item.last_seen_at),
                 ),
                 gauge,
             )
@@ -1592,6 +1593,12 @@ fn parse_episode_u32(ep: &str) -> Option<u32> {
     ep.trim().parse::<u32>().ok()
 }
 
+fn format_last_seen_display(raw: &str) -> String {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|_| raw.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1957,5 +1964,17 @@ mod tests {
     fn has_next_episode_falls_back_to_numeric_when_list_missing() {
         assert!(has_next_episode("25", Some(27), None));
         assert!(!has_next_episode("27", Some(27), None));
+    }
+
+    #[test]
+    fn format_last_seen_display_parses_rfc3339_timestamp() {
+        let formatted = format_last_seen_display("2026-02-25T18:27:06.100701256+00:00");
+        assert_eq!(formatted, "2026-02-25 18:27");
+    }
+
+    #[test]
+    fn format_last_seen_display_keeps_raw_when_invalid() {
+        let raw = "not-a-timestamp";
+        assert_eq!(format_last_seen_display(raw), raw);
     }
 }

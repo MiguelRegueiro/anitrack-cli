@@ -1,3 +1,7 @@
 /target
 .xdg/
 /docs/
+
+# release artifacts
+dist/
+*.tar.gz
