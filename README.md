@@ -76,3 +76,7 @@ AniTrack also accepts space-separated history lines when tabs are not present:
 - If you navigate episodes inside `ani-cli` after playback starts (for example using its `next` option), AniTrack stores the last episode reached when the session ends successfully.
 - If no prior entry exists, `next` and `replay` instruct you to run `anitrack start` first.
 - TUI/start sync only records entries tied to the current run and does not backfill arbitrary old history rows, so deleted DB entries are not resurrected unless watched again.
+
+## License
+This project is licensed under the GNU General Public License v3.0 or later (`GPL-3.0-or-later`).
+See [LICENSE](LICENSE).
