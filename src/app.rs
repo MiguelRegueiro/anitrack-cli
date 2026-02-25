@@ -19,7 +19,8 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, TableState,
+    Block, BorderType, Borders, Cell, Clear, Gauge, Padding, Paragraph, Row, Table, TableState,
+    Wrap,
 };
 use ratatui::{Frame, Terminal};
 
@@ -310,7 +311,7 @@ fn run_tui(db: &Database) -> Result<()> {
                     if !has_next_episode(&selected_item.last_episode, total_eps, episode_list) {
                         pending_notice = Some(PendingNotice {
                             message: format!(
-                                "Already at the last available episode for {}.\n\nPress any key to continue.",
+                                "No more episodes available.\n\n{}\n\nPress any key to continue.",
                                 truncate(&selected_item.title, 50)
                             ),
                         });
@@ -536,22 +537,26 @@ fn draw_tui(
     frame.render_widget(status_widget, chunks[3]);
 
     if let Some(confirm) = pending_delete {
-        let popup_area = centered_rect(70, 18, frame.area());
-        frame.render_widget(Clear, popup_area);
         let popup_text = format!(
-            "Delete tracked entry?\n{}\n\nPress y/Enter to confirm, n/Esc to cancel.",
+            "Delete tracked entry?\n\n{}\n\nThis cannot be undone.\n\n[y / Enter] Delete   [n / Esc] Cancel",
             truncate(&confirm.title, 56)
         );
+        let popup_area = popup_rect_for_text(frame.area(), &popup_text);
+        render_popup_shadow(frame, popup_area);
+        frame.render_widget(Clear, popup_area);
         let popup = Paragraph::new(popup_text)
             .alignment(Alignment::Center)
-            .block(panel_block("Confirm Delete"));
+            .wrap(Wrap { trim: true })
+            .block(modal_block("Confirm Delete"));
         frame.render_widget(popup, popup_area);
     } else if let Some(notice) = pending_notice {
-        let popup_area = centered_rect(70, 18, frame.area());
+        let popup_area = popup_rect_for_text(frame.area(), &notice.message);
+        render_popup_shadow(frame, popup_area);
         frame.render_widget(Clear, popup_area);
         let popup = Paragraph::new(notice.message.clone())
             .alignment(Alignment::Center)
-            .block(panel_block("No More Episodes"));
+            .wrap(Wrap { trim: true })
+            .block(modal_block("No More Episodes"));
         frame.render_widget(popup, popup_area);
     }
 }
@@ -562,6 +567,19 @@ fn panel_block(title: &'static str) -> Block<'static> {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Rgb(125, 135, 150)))
         .title(title)
+}
+
+fn modal_block(title: &'static str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(
+            Style::default()
+                .fg(Color::Rgb(160, 190, 235))
+                .add_modifier(Modifier::BOLD),
+        )
+        .title(title)
+        .padding(Padding::new(2, 2, 1, 1))
 }
 
 fn pill_active() -> Style {
@@ -589,23 +607,50 @@ fn status_style(status: &str) -> Style {
     }
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
+fn centered_fixed_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let clamped_width = width.min(area.width.max(1));
+    let clamped_height = height.min(area.height.max(1));
+    let x = area.x + area.width.saturating_sub(clamped_width) / 2;
+    let y = area.y + area.height.saturating_sub(clamped_height) / 2;
+    Rect::new(x, y, clamped_width, clamped_height)
+}
+
+fn render_popup_shadow(frame: &mut Frame, popup_area: Rect) {
+    let area = frame.area();
+    let shadow = Rect::new(
+        (popup_area.x + 1).min(area.x + area.width.saturating_sub(1)),
+        (popup_area.y + 1).min(area.y + area.height.saturating_sub(1)),
+        popup_area.width.saturating_sub(1),
+        popup_area.height.saturating_sub(1),
+    );
+    if shadow.width == 0 || shadow.height == 0 {
+        return;
+    }
+    let shadow_block = Block::default().style(Style::default().bg(Color::Rgb(14, 16, 24)));
+    frame.render_widget(shadow_block, shadow);
+}
+
+fn popup_rect_for_text(area: Rect, text: &str) -> Rect {
+    let max_line_width = text
+        .lines()
+        .map(|line| line.chars().count() as u16)
+        .max()
+        .unwrap_or(0);
+    let line_count = text.lines().count() as u16;
+
+    let available_width = area.width.saturating_sub(2).max(1);
+    let min_width = 48.min(available_width);
+    let max_width = 72.min(available_width);
+    let desired_width = max_line_width.saturating_add(12);
+    let width = desired_width.clamp(min_width, max_width);
+
+    let available_height = area.height.saturating_sub(2).max(1);
+    let min_height = 10.min(available_height);
+    let max_height = 18.min(available_height);
+    let desired_height = line_count.saturating_add(6);
+    let height = desired_height.clamp(min_height, max_height);
+
+    centered_fixed_rect(width, height, area)
 }
 
 fn refresh_items(
