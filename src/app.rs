@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::env;
@@ -172,6 +173,7 @@ fn run_tui(db: &Database) -> Result<()> {
     table_state.select((!items.is_empty()).then_some(0));
     let mut action = TuiAction::Next;
     let mut pending_delete = None::<PendingDelete>;
+    let mut episode_lists_by_id: HashMap<String, Option<Vec<String>>> = HashMap::new();
     let mut status = if items.is_empty() {
         status_info("No tracked entries yet. Press `s` to search or run `anitrack start`.")
     } else {
@@ -179,6 +181,7 @@ fn run_tui(db: &Database) -> Result<()> {
     };
 
     loop {
+        ensure_selected_episode_list(&items, &table_state, &mut episode_lists_by_id);
         terminal.draw(|frame| {
             draw_tui(
                 frame,
@@ -187,6 +190,7 @@ fn run_tui(db: &Database) -> Result<()> {
                 action,
                 &status,
                 pending_delete.as_ref(),
+                &episode_lists_by_id,
             )
         })?;
 
@@ -317,6 +321,7 @@ fn draw_tui(
     action: TuiAction,
     status: &str,
     pending_delete: Option<&PendingDelete>,
+    episode_lists_by_id: &HashMap<String, Option<Vec<String>>>,
 ) {
     let bg = Block::default().style(Style::default().bg(Color::Black));
     frame.render_widget(bg, frame.area());
@@ -423,20 +428,21 @@ fn draw_tui(
             let total_eps_text = total_eps
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "-".to_string());
-            let current_ep = parse_episode_u32(&item.last_episode);
-            let gauge = match (current_ep, total_eps) {
-                (Some(current), Some(total)) if total > 0 => {
-                    let ratio = (current as f64 / total as f64).clamp(0.0, 1.0);
-                    Some((ratio, format!("{current}/{total}")))
-                }
-                _ => None,
-            };
+            let episode_list = episode_lists_by_id
+                .get(&item.ani_id)
+                .and_then(|episodes| episodes.as_ref())
+                .map(|episodes| episodes.as_slice());
+            let episode_progress_text = total_eps
+                .map(|total| format_episode_progress_text(&item.last_episode, total, episode_list))
+                .unwrap_or_else(|| format!("{} of {}", item.last_episode, total_eps_text));
+            let gauge = total_eps.and_then(|total| {
+                build_progress_gauge(&item.last_episode, total, episode_list)
+            });
             (
                 format!(
-                    "Title\n{}\n\nEpisode\n{} of {}\n\nAni ID\n{}\n\nLast Seen\n{}",
+                    "Title\n{}\n\nEpisode\n{}\n\nAni ID\n{}\n\nLast Seen\n{}",
                     truncate(&title, 40),
-                    item.last_episode,
-                    total_eps_text,
+                    episode_progress_text,
                     truncate(&item.ani_id, 28),
                     item.last_seen_at,
                 ),
@@ -652,6 +658,26 @@ fn parse_title_and_total_eps(title: &str) -> (String, Option<u32>) {
         return (trimmed.to_string(), None);
     };
     (trimmed[..open_idx].trim().to_string(), Some(num))
+}
+
+fn ensure_selected_episode_list(
+    items: &[crate::db::SeenEntry],
+    table_state: &TableState,
+    episode_lists_by_id: &mut HashMap<String, Option<Vec<String>>>,
+) {
+    let Some(selected_idx) = table_state.selected() else {
+        return;
+    };
+    let Some(item) = items.get(selected_idx) else {
+        return;
+    };
+    if episode_lists_by_id.contains_key(&item.ani_id) {
+        return;
+    }
+
+    let total_hint = parse_title_and_total_eps(&item.title).1;
+    let fetched = fetch_episode_labels(&item.ani_id, total_hint);
+    episode_lists_by_id.insert(item.ani_id.clone(), fetched);
 }
 
 struct TuiSession {
@@ -1257,6 +1283,154 @@ fn detect_latest_watch_event_from_logs(
     None
 }
 
+fn parse_episode_f64(ep: &str) -> Option<f64> {
+    ep.trim().parse::<f64>().ok()
+}
+
+fn episode_labels_match(a: &str, b: &str) -> bool {
+    let left = a.trim();
+    let right = b.trim();
+    if left == right {
+        return true;
+    }
+
+    match (parse_episode_f64(left), parse_episode_f64(right)) {
+        (Some(x), Some(y)) => (x - y).abs() < 0.000_001,
+        _ => false,
+    }
+}
+
+fn compare_episode_labels(a: &str, b: &str) -> Ordering {
+    match (parse_episode_f64(a), parse_episode_f64(b)) {
+        (Some(left), Some(right)) => left.partial_cmp(&right).unwrap_or(Ordering::Equal),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => a.cmp(b),
+    }
+}
+
+fn parse_mode_episode_labels(raw: &str, mode: &str) -> Option<Vec<String>> {
+    let marker = format!("\"{mode}\":[");
+    let start = raw.find(&marker)? + marker.len();
+    let after = &raw[start..];
+    let end = after.find(']')?;
+    let chunk = &after[..end];
+
+    let mut episodes = Vec::new();
+    for token in chunk.split(',') {
+        let trimmed = token.trim().trim_matches('"');
+        if !trimmed.is_empty() && trimmed != "null" {
+            episodes.push(trimmed.to_string());
+        }
+    }
+    if episodes.is_empty() {
+        None
+    } else {
+        Some(episodes)
+    }
+}
+
+fn choose_episode_labels_candidate(
+    candidates: Vec<Vec<String>>,
+    total_hint: Option<u32>,
+) -> Option<Vec<String>> {
+    if candidates.is_empty() {
+        return None;
+    }
+    if let Some(total) = total_hint {
+        for candidate in &candidates {
+            if candidate.len() as u32 == total {
+                return Some(candidate.clone());
+            }
+        }
+    }
+    candidates.into_iter().max_by_key(|episodes| episodes.len())
+}
+
+fn fetch_episode_labels(ani_id: &str, total_hint: Option<u32>) -> Option<Vec<String>> {
+    let query = "query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail }}";
+    let variables = format!("{{\"showId\":\"{ani_id}\"}}");
+    let output = ProcessCommand::new("curl")
+        .arg("-e")
+        .arg("https://allanime.to")
+        .arg("-s")
+        .arg("-G")
+        .arg("https://api.allanime.day/api")
+        .arg("--data-urlencode")
+        .arg(format!("variables={variables}"))
+        .arg("--data-urlencode")
+        .arg(format!("query={query}"))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let raw = String::from_utf8(output.stdout).ok()?;
+    let mut candidates = Vec::new();
+    if let Some(sub) = parse_mode_episode_labels(&raw, "sub") {
+        candidates.push(sub);
+    }
+    if let Some(dub) = parse_mode_episode_labels(&raw, "dub") {
+        candidates.push(dub);
+    }
+    let mut episodes = choose_episode_labels_candidate(candidates, total_hint)?;
+    episodes.sort_by(|left, right| compare_episode_labels(left, right));
+    Some(episodes)
+}
+
+fn episode_ordinal_from_list(last_episode: &str, episodes: &[String]) -> Option<u32> {
+    episodes
+        .iter()
+        .position(|episode| episode_labels_match(episode, last_episode))
+        .map(|idx| (idx + 1) as u32)
+}
+
+fn episode_progress_position(
+    last_episode: &str,
+    total_episodes: u32,
+    episode_list: Option<&[String]>,
+) -> Option<u32> {
+    if total_episodes == 0 {
+        return None;
+    }
+
+    if let Some(episodes) = episode_list
+        && let Some(ordinal) = episode_ordinal_from_list(last_episode, episodes)
+    {
+        return Some(ordinal.min(total_episodes));
+    }
+
+    parse_episode_u32(last_episode).map(|current| current.min(total_episodes))
+}
+
+fn format_episode_progress_text(
+    last_episode: &str,
+    total_episodes: u32,
+    episode_list: Option<&[String]>,
+) -> String {
+    match episode_progress_position(last_episode, total_episodes, episode_list) {
+        Some(position) => {
+            if parse_episode_u32(last_episode) == Some(position) {
+                format!("{position} of {total_episodes}")
+            } else {
+                format!("{position} of {total_episodes} (episode {last_episode})")
+            }
+        }
+        None => format!("{last_episode} of {total_episodes}"),
+    }
+}
+
+fn build_progress_gauge(
+    last_episode: &str,
+    total_episodes: u32,
+    episode_list: Option<&[String]>,
+) -> Option<(f64, String)> {
+    let shown = episode_progress_position(last_episode, total_episodes, episode_list)?;
+    let ratio = (shown as f64 / total_episodes as f64).clamp(0.0, 1.0);
+    Some((ratio, format!("{shown}/{total_episodes}")))
+}
+
 fn truncate(s: &str, max: usize) -> String {
     let mut out = s.to_string();
     if out.chars().count() > max {
@@ -1532,5 +1706,67 @@ mod tests {
             .expect("message should map to history entry");
         assert_eq!(matched.id, "id-2");
         assert_eq!(matched.ep, "0");
+    }
+
+    #[test]
+    fn episode_ordinal_from_list_counts_zero_and_decimal_entries() {
+        let mut episodes = vec!["0".to_string()];
+        for ep in 1..=13 {
+            episodes.push(ep.to_string());
+        }
+        episodes.push("13.5".to_string());
+        for ep in 14..=25 {
+            episodes.push(ep.to_string());
+        }
+
+        let ordinal =
+            episode_ordinal_from_list("25", &episodes).expect("episode should be found in list");
+        assert_eq!(ordinal, 27);
+    }
+
+    #[test]
+    fn build_progress_gauge_uses_episode_ordinal_when_list_available() {
+        let mut episodes = vec!["0".to_string()];
+        for ep in 1..=13 {
+            episodes.push(ep.to_string());
+        }
+        episodes.push("13.5".to_string());
+        for ep in 14..=25 {
+            episodes.push(ep.to_string());
+        }
+
+        let (ratio, label) = build_progress_gauge("25", 27, Some(&episodes))
+            .expect("gauge should be generated");
+        assert!((ratio - 1.0).abs() < 0.000_001);
+        assert_eq!(label, "27/27");
+    }
+
+    #[test]
+    fn build_progress_gauge_falls_back_to_numeric_episode_without_list() {
+        let (ratio, label) =
+            build_progress_gauge("25", 27, None).expect("numeric fallback should work");
+        assert!((ratio - (25.0 / 27.0)).abs() < 0.000_001);
+        assert_eq!(label, "25/27");
+    }
+
+    #[test]
+    fn format_episode_progress_text_uses_ordinal_and_keeps_raw_label_when_needed() {
+        let mut episodes = vec!["0".to_string()];
+        for ep in 1..=13 {
+            episodes.push(ep.to_string());
+        }
+        episodes.push("13.5".to_string());
+        for ep in 14..=25 {
+            episodes.push(ep.to_string());
+        }
+
+        let text = format_episode_progress_text("25", 27, Some(&episodes));
+        assert_eq!(text, "27 of 27 (episode 25)");
+    }
+
+    #[test]
+    fn format_episode_progress_text_uses_plain_numeric_when_ordinal_matches() {
+        let text = format_episode_progress_text("12", 24, None);
+        assert_eq!(text, "12 of 24");
     }
 }
