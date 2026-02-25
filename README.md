@@ -1,14 +1,22 @@
 # AniTrack
 
-AniTrack is a separate companion tool for `ani-cli`. It adds tracking and navigation functionality while delegating playback to your installed `ani-cli`.
+AniTrack is a companion CLI for `ani-cli`. It adds watch-progress tracking and navigation while delegating search and playback to `ani-cli`.
 
 ## Credit
-AniTrack relies on the excellent [`ani-cli`](https://github.com/pystardust/ani-cli) project for anime search/stream playback.
+AniTrack depends on [`ani-cli`](https://github.com/pystardust/ani-cli) for anime search and streaming playback.
 This project does not replace `ani-cli`; it orchestrates and extends the workflow around it.
 
 ## Requirements
-- `ani-cli` installed and available on your `PATH` (required)
-- Rust toolchain (`cargo`)
+- [`ani-cli`](https://github.com/pystardust/ani-cli) installed and available on your `PATH` (required)
+- Rust toolchain (`cargo`) for building/running AniTrack
+
+### Install `ani-cli`
+Follow the official installation instructions in the `ani-cli` repository.
+
+After installation, verify it is available:
+```bash
+ani-cli --help
+```
 
 ## Commands
 - `anitrack start`
@@ -29,7 +37,8 @@ This project does not replace `ani-cli`; it orchestrates and extends the workflo
 - `anitrack tui`
   - Opens an interactive terminal UI with tracked shows (latest first)
   - `Up/Down` selects show
-- `Left/Right` selects action (`Next` / `Replay`, default `Next`)
+  - `Left/Right` selects action (`Next` / `Replay`, default `Next`)
+  - `s` launches search (runs `ani-cli` UI and returns to the TUI after exit)
   - `Enter` runs the selected action for the selected show
   - `q` quits
 

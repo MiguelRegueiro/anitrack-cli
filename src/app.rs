@@ -3,10 +3,10 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, Stdio};
+use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -21,6 +21,9 @@ use ratatui::{Frame, Terminal};
 use crate::cli::{Cli, Command};
 use crate::db::Database;
 use crate::paths::database_file_path;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 #[derive(Debug, Clone)]
 struct HistEntry {
@@ -44,32 +47,8 @@ pub fn run(cli: Cli) -> Result<()> {
 }
 
 fn run_start(db: &Database) -> Result<()> {
-    let histfile = ani_cli_histfile();
-    let before = read_hist_map(&histfile)?;
-
-    let ani_cli_bin = resolve_ani_cli_bin();
-    let status = ProcessCommand::new(&ani_cli_bin)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .with_context(|| format!("failed to launch {}", ani_cli_bin.display()))?;
-
-    let after = read_hist_map(&histfile)?;
-    if let Some(changed) = detect_changed(&before, &after) {
-        db.upsert_seen(&changed.id, &changed.title, &changed.ep)?;
-        println!(
-            "\nRecorded last seen: {} | episode {}",
-            changed.title, changed.ep
-        );
-    } else {
-        println!("\nNo new history entry detected from this run.");
-    }
-
-    if !status.success() {
-        println!("ani-cli exited with status: {}", status);
-    }
-
+    let (message, _) = run_ani_cli_search(db)?;
+    println!("\n{message}");
     Ok(())
 }
 
@@ -179,7 +158,7 @@ fn run_tui(db: &Database) -> Result<()> {
     let mut status = if items.is_empty() {
         "No tracked entries yet. Run `anitrack start` first.".to_string()
     } else {
-        "Use Up/Down to select show. Left=Next, Right=Replay. Enter runs action. q quits."
+        "Use Up/Down to select show. Left=Next, Right=Replay. Enter runs action. s=Search. q quits."
             .to_string()
     };
 
@@ -199,6 +178,28 @@ fn run_tui(db: &Database) -> Result<()> {
 
         match key.code {
             KeyCode::Char('q') => break,
+            KeyCode::Char('s') => {
+                session.suspend()?;
+                let result = run_ani_cli_search(db);
+                session.resume()?;
+                terminal.clear()?;
+
+                match result {
+                    Ok((msg, changed_id)) => {
+                        status = msg;
+                        items = db.list_seen()?;
+                        if items.is_empty() {
+                            table_state.select(None);
+                        } else if let Some(id) = changed_id {
+                            let idx = items.iter().position(|item| item.ani_id == id).unwrap_or(0);
+                            table_state.select(Some(idx));
+                        } else {
+                            table_state.select(table_state.selected().or(Some(0)));
+                        }
+                    }
+                    Err(err) => status = format!("Search failed: {err}"),
+                }
+            }
             KeyCode::Up => {
                 if let Some(selected) = table_state.selected() {
                     table_state.select(Some(selected.saturating_sub(1)));
@@ -453,6 +454,115 @@ fn open_db() -> Result<Database> {
     let db = Database::open(&db_path)?;
     db.migrate()?;
     Ok(db)
+}
+
+#[cfg(unix)]
+fn with_sigint_ignored<F, R>(f: F) -> Result<R>
+where
+    F: FnOnce() -> Result<R>,
+{
+    unsafe {
+        let mut new_action: libc::sigaction = std::mem::zeroed();
+        new_action.sa_sigaction = libc::SIG_IGN;
+        libc::sigemptyset(&mut new_action.sa_mask);
+        new_action.sa_flags = 0;
+
+        let mut old_action: libc::sigaction = std::mem::zeroed();
+        if libc::sigaction(libc::SIGINT, &new_action, &mut old_action) != 0 {
+            return Err(anyhow!("failed to ignore SIGINT"));
+        }
+
+        let result = f();
+        let _ = libc::sigaction(libc::SIGINT, &old_action, std::ptr::null_mut());
+        result
+    }
+}
+
+#[cfg(not(unix))]
+fn with_sigint_ignored<F, R>(f: F) -> Result<R>
+where
+    F: FnOnce() -> Result<R>,
+{
+    f()
+}
+
+#[cfg(unix)]
+fn run_interactive_cmd(mut cmd: ProcessCommand) -> Result<ExitStatus> {
+    let stdin_fd = libc::STDIN_FILENO;
+    let parent_pgrp = unsafe { libc::tcgetpgrp(stdin_fd) };
+    if parent_pgrp == -1 {
+        return Err(anyhow!("failed to read terminal process group"));
+    }
+
+    unsafe {
+        let _ = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+    }
+
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+            libc::signal(libc::SIGTSTP, libc::SIG_DFL);
+            if libc::setpgid(0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = cmd.spawn().context("failed to spawn ani-cli")?;
+    let child_pgid = child.id() as libc::pid_t;
+    unsafe {
+        let _ = libc::tcsetpgrp(stdin_fd, child_pgid);
+    }
+
+    let status = child.wait().context("failed waiting on ani-cli")?;
+
+    unsafe {
+        let _ = libc::tcsetpgrp(stdin_fd, parent_pgrp);
+        let _ = libc::signal(libc::SIGTTOU, libc::SIG_DFL);
+    }
+
+    Ok(status)
+}
+
+#[cfg(not(unix))]
+fn run_interactive_cmd(mut cmd: ProcessCommand) -> Result<ExitStatus> {
+    cmd.status().context("failed to launch ani-cli")
+}
+
+fn run_ani_cli_search(db: &Database) -> Result<(String, Option<String>)> {
+    let histfile = ani_cli_histfile();
+    let before = read_hist_map(&histfile)?;
+
+    let ani_cli_bin = resolve_ani_cli_bin();
+    let status = with_sigint_ignored(|| {
+        let mut cmd = ProcessCommand::new(&ani_cli_bin);
+        cmd.stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        run_interactive_cmd(cmd)
+            .with_context(|| format!("failed to launch {}", ani_cli_bin.display()))
+    })?;
+
+    let after = read_hist_map(&histfile)?;
+    let mut changed_id = None;
+    let mut message = if let Some(changed) = detect_changed(&before, &after) {
+        db.upsert_seen(&changed.id, &changed.title, &changed.ep)?;
+        changed_id = Some(changed.id);
+        format!(
+            "Recorded last seen: {} | episode {}",
+            changed.title, changed.ep
+        )
+    } else {
+        "No new history entry detected from this run.".to_string()
+    };
+
+    if !status.success() {
+        message = format!("{message}\nani-cli exited with status: {status}");
+    }
+
+    Ok((message, changed_id))
 }
 
 fn resolve_ani_cli_bin() -> PathBuf {
