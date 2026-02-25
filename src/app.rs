@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io;
@@ -14,8 +15,11 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, TableState,
+};
 use ratatui::{Frame, Terminal};
 
 use crate::cli::{Cli, Command};
@@ -25,11 +29,17 @@ use crate::paths::database_file_path;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct HistEntry {
     ep: String,
     id: String,
     title: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HistFileSig {
+    len: u64,
+    modified_ns: u128,
 }
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -55,18 +65,11 @@ fn run_start(db: &Database) -> Result<()> {
 fn run_next(db: &Database) -> Result<()> {
     match db.last_seen()? {
         Some(item) => {
-            let current = item.last_episode.parse::<u32>().with_context(|| {
-                format!(
-                    "cannot parse last episode '{}' for '{}'",
-                    item.last_episode, item.title
-                )
-            })?;
-            let next = current + 1;
             println!("Playing next episode for last seen show:");
             println!("  Title: {}", item.title);
-            println!("  Episode: {}", next);
+            println!("  Current stored episode: {}", item.last_episode);
 
-            let outcome = match run_ani_cli_continue(&item, current) {
+            let outcome = match run_ani_cli_continue(&item, &item.last_episode) {
                 Ok(outcome) => outcome,
                 Err(err) => {
                     println!("ani-cli launch failed: {err}");
@@ -75,8 +78,10 @@ fn run_next(db: &Database) -> Result<()> {
                 }
             };
             if outcome.success {
-                let updated_ep = outcome.final_episode.unwrap_or(next);
-                db.upsert_seen(&item.ani_id, &item.title, &updated_ep.to_string())?;
+                let updated_ep = outcome
+                    .final_episode
+                    .unwrap_or_else(|| item.last_episode.clone());
+                db.upsert_seen(&item.ani_id, &item.title, &updated_ep)?;
                 println!("Updated progress: {} -> episode {}", item.title, updated_ep);
             } else {
                 println!("Playback failed/interrupted. Progress not updated.");
@@ -90,23 +95,11 @@ fn run_next(db: &Database) -> Result<()> {
 fn run_replay(db: &Database) -> Result<()> {
     match db.last_seen()? {
         Some(item) => {
-            let current = item.last_episode.parse::<u32>().with_context(|| {
-                format!(
-                    "cannot parse last episode '{}' for '{}'",
-                    item.last_episode, item.title
-                )
-            })?;
             println!("Replaying last seen episode:");
             println!("  Title: {}", item.title);
-            println!("  Episode: {}", current);
+            println!("  Episode: {}", item.last_episode);
 
-            let outcome = if current > 1 {
-                // ani-cli -c plays the episode after what's in history.
-                run_ani_cli_continue(&item, current - 1)
-            } else {
-                // Episode 1 cannot be represented as "previous" in history; run explicit query.
-                run_ani_cli_episode_with_global_tracking(&item, 1)
-            };
+            let outcome = run_ani_cli_episode_with_global_tracking(&item, &item.last_episode);
             let outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(err) => {
@@ -116,8 +109,10 @@ fn run_replay(db: &Database) -> Result<()> {
                 }
             };
             if outcome.success {
-                let updated_ep = outcome.final_episode.unwrap_or(current);
-                db.upsert_seen(&item.ani_id, &item.title, &updated_ep.to_string())?;
+                let updated_ep = outcome
+                    .final_episode
+                    .unwrap_or_else(|| item.last_episode.clone());
+                db.upsert_seen(&item.ani_id, &item.title, &updated_ep)?;
                 println!(
                     "Replay finished: {} now on episode {}",
                     item.title, updated_ep
@@ -323,6 +318,9 @@ fn draw_tui(
     status: &str,
     pending_delete: Option<&PendingDelete>,
 ) {
+    let bg = Block::default().style(Style::default().bg(Color::Black));
+    frame.render_widget(bg, frame.area());
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -330,13 +328,51 @@ fn draw_tui(
             Constraint::Min(8),
             Constraint::Length(3),
             Constraint::Length(3),
-            Constraint::Length(3),
         ])
         .split(frame.area());
 
-    let header =
-        Paragraph::new("AniTrack TUI").block(Block::default().borders(Borders::ALL).title("Title"));
+    let selected_idx = table_state.selected().map(|i| i + 1).unwrap_or(0);
+    let selected_text = if selected_idx == 0 {
+        "-".to_string()
+    } else {
+        selected_idx.to_string()
+    };
+    let mode_text = match action {
+        TuiAction::Next => "NEXT",
+        TuiAction::Replay => "REPLAY",
+    };
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "ANITRACK",
+            Style::default()
+                .fg(Color::Rgb(110, 170, 255))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("   ", Style::default()),
+        Span::styled(
+            format!("{} entries", items.len()),
+            Style::default().fg(Color::Rgb(185, 195, 210)),
+        ),
+        Span::styled("   ", Style::default()),
+        Span::styled(
+            format!("selected {selected_text}"),
+            Style::default().fg(Color::Rgb(185, 195, 210)),
+        ),
+        Span::styled("   ", Style::default()),
+        Span::styled(mode_text, Style::default().fg(Color::Yellow)),
+    ]))
+    .alignment(Alignment::Center)
+    .block(panel_block("Dashboard"));
     frame.render_widget(header, chunks[0]);
+
+    let body_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(64), Constraint::Percentage(36)])
+        .split(chunks[1]);
+    let details_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(3)])
+        .split(body_chunks[1]);
 
     let rows: Vec<Row> = items
         .iter()
@@ -365,36 +401,101 @@ fn draw_tui(
         ],
     )
     .header(
-        Row::new(vec!["Title", "Total Eps", "Last Ep", "Last Seen"])
-            .style(Style::default().add_modifier(Modifier::BOLD)),
+        Row::new(vec!["Title", "Total Eps", "Last Ep", "Last Seen"]).style(
+            Style::default()
+                .fg(Color::Rgb(110, 170, 255))
+                .add_modifier(Modifier::BOLD),
+        ),
     )
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Tracked Shows (latest first)"),
+    .block(panel_block("Library"))
+    .row_highlight_style(
+        Style::default()
+            .bg(Color::Rgb(110, 170, 255))
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
     )
-    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-    .highlight_symbol(">> ");
-    frame.render_stateful_widget(table, chunks[1], table_state);
+    .highlight_symbol("▸ ");
+    frame.render_stateful_widget(table, body_chunks[0], table_state);
 
-    let action_text = match action {
-        TuiAction::Next => "[Next]  Replay",
-        TuiAction::Replay => "Next  [Replay]",
+    let (selection_text, gauge) = match table_state.selected().and_then(|idx| items.get(idx)) {
+        Some(item) => {
+            let (title, total_eps) = parse_title_and_total_eps(&item.title);
+            let total_eps_text = total_eps
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let current_ep = parse_episode_u32(&item.last_episode);
+            let gauge = match (current_ep, total_eps) {
+                (Some(current), Some(total)) if total > 0 => {
+                    let ratio = (current as f64 / total as f64).clamp(0.0, 1.0);
+                    Some((ratio, format!("{current}/{total}")))
+                }
+                _ => None,
+            };
+            (
+                format!(
+                    "Title\n{}\n\nEpisode\n{} of {}\n\nAni ID\n{}\n\nLast Seen\n{}",
+                    truncate(&title, 40),
+                    item.last_episode,
+                    total_eps_text,
+                    truncate(&item.ani_id, 28),
+                    item.last_seen_at,
+                ),
+                gauge,
+            )
+        }
+        None => (
+            "No tracked entries yet.\n\nPress s to run ani-cli search and add entries.".to_string(),
+            None,
+        ),
     };
-    let action_widget =
-        Paragraph::new(action_text).block(Block::default().borders(Borders::ALL).title("Action"));
-    frame.render_widget(action_widget, chunks[2]);
+    let selection = Paragraph::new(selection_text)
+        .style(Style::default().fg(Color::Rgb(230, 230, 230)))
+        .block(panel_block("Selected"))
+        .alignment(Alignment::Left);
+    frame.render_widget(selection, details_chunks[0]);
+    if let Some((ratio, label)) = gauge {
+        let progress = Gauge::default()
+            .block(panel_block("Progress"))
+            .gauge_style(
+                Style::default()
+                    .fg(Color::Rgb(130, 190, 255))
+                    .bg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .label(label)
+            .ratio(ratio);
+        frame.render_widget(progress, details_chunks[1]);
+    }
+
+    let action_line = match action {
+        TuiAction::Next => Line::from(vec![
+            Span::styled(" NEXT ", pill_active()),
+            Span::styled(" ", Style::default()),
+            Span::styled(" REPLAY ", pill_inactive()),
+            Span::styled(
+                "   ↑/↓ move  ←/→ mode  Enter run  s search  d delete  q quit",
+                Style::default().fg(Color::Rgb(185, 195, 210)),
+            ),
+        ]),
+        TuiAction::Replay => Line::from(vec![
+            Span::styled(" NEXT ", pill_inactive()),
+            Span::styled(" ", Style::default()),
+            Span::styled(" REPLAY ", pill_active()),
+            Span::styled(
+                "   ↑/↓ move  ←/→ mode  Enter run  s search  d delete  q quit",
+                Style::default().fg(Color::Rgb(185, 195, 210)),
+            ),
+        ]),
+    };
+    let command_bar = Paragraph::new(action_line)
+        .alignment(Alignment::Center)
+        .block(panel_block("Controls"));
+    frame.render_widget(command_bar, chunks[2]);
 
     let status_widget = Paragraph::new(status.to_string())
-        .block(Block::default().borders(Borders::ALL).title("Status"));
+        .style(status_style(status))
+        .block(panel_block("Status"));
     frame.render_widget(status_widget, chunks[3]);
-
-    let footer = Paragraph::new(
-        "Keys: Up/Down move | Left/Right action | Enter run | s search | d delete | q quit",
-    )
-    .alignment(Alignment::Center)
-    .block(Block::default().borders(Borders::ALL).title("Key Hints"));
-    frame.render_widget(footer, chunks[4]);
 
     if let Some(confirm) = pending_delete {
         let popup_area = centered_rect(70, 18, frame.area());
@@ -405,12 +506,41 @@ fn draw_tui(
         );
         let popup = Paragraph::new(popup_text)
             .alignment(Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Confirm Delete"),
-            );
+            .block(panel_block("Confirm Delete"));
         frame.render_widget(popup, popup_area);
+    }
+}
+
+fn panel_block(title: &'static str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(125, 135, 150)))
+        .title(title)
+}
+
+fn pill_active() -> Style {
+    Style::default()
+        .bg(Color::Rgb(110, 170, 255))
+        .fg(Color::Black)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn pill_inactive() -> Style {
+    Style::default()
+        .bg(Color::Rgb(72, 82, 96))
+        .fg(Color::Rgb(230, 235, 242))
+}
+
+fn status_style(status: &str) -> Style {
+    if status.starts_with("ERROR:") {
+        Style::default()
+            .fg(Color::Rgb(255, 145, 120))
+            .add_modifier(Modifier::BOLD)
+    } else if status.starts_with("INFO:") {
+        Style::default().fg(Color::Rgb(205, 165, 255))
+    } else {
+        Style::default().fg(Color::Rgb(230, 235, 242))
     }
 }
 
@@ -474,17 +604,12 @@ fn run_selected_action(
 ) -> Result<String> {
     match action {
         TuiAction::Next => {
-            let current = item.last_episode.parse::<u32>().with_context(|| {
-                format!(
-                    "cannot parse last episode '{}' for '{}'",
-                    item.last_episode, item.title
-                )
-            })?;
-            let next = current + 1;
-            let outcome = run_ani_cli_continue(item, current)?;
+            let outcome = run_ani_cli_continue(item, &item.last_episode)?;
             if outcome.success {
-                let updated_ep = outcome.final_episode.unwrap_or(next);
-                db.upsert_seen(&item.ani_id, &item.title, &updated_ep.to_string())?;
+                let updated_ep = outcome
+                    .final_episode
+                    .unwrap_or_else(|| item.last_episode.clone());
+                db.upsert_seen(&item.ani_id, &item.title, &updated_ep)?;
                 Ok(format!(
                     "Updated progress: {} -> episode {}",
                     item.title, updated_ep
@@ -494,21 +619,12 @@ fn run_selected_action(
             }
         }
         TuiAction::Replay => {
-            let current = item.last_episode.parse::<u32>().with_context(|| {
-                format!(
-                    "cannot parse last episode '{}' for '{}'",
-                    item.last_episode, item.title
-                )
-            })?;
-
-            let outcome = if current > 1 {
-                run_ani_cli_continue(item, current - 1)?
-            } else {
-                run_ani_cli_episode_with_global_tracking(item, 1)?
-            };
+            let outcome = run_ani_cli_episode_with_global_tracking(item, &item.last_episode)?;
             if outcome.success {
-                let updated_ep = outcome.final_episode.unwrap_or(current);
-                db.upsert_seen(&item.ani_id, &item.title, &updated_ep.to_string())?;
+                let updated_ep = outcome
+                    .final_episode
+                    .unwrap_or_else(|| item.last_episode.clone());
+                db.upsert_seen(&item.ani_id, &item.title, &updated_ep)?;
                 Ok(format!(
                     "Replay finished: {} now on episode {}",
                     item.title, updated_ep
@@ -668,9 +784,12 @@ fn run_interactive_cmd(mut cmd: ProcessCommand) -> Result<ExitStatus> {
 
 fn run_ani_cli_search(db: &Database) -> Result<(String, Option<String>)> {
     let histfile = ani_cli_histfile();
+    let before_sig = read_histfile_sig(&histfile);
     let before_read = read_hist_map(&histfile);
     let before = before_read.entries;
+    let before_ordered = before_read.ordered_entries;
     let mut warnings = before_read.warnings;
+    let log_window_start_ns = unix_now_ns();
 
     let ani_cli_bin = resolve_ani_cli_bin();
     let status = match with_sigint_ignored(|| {
@@ -690,16 +809,23 @@ fn run_ani_cli_search(db: &Database) -> Result<(String, Option<String>)> {
     };
 
     let after_read = read_hist_map(&histfile);
+    let after_sig = read_histfile_sig(&histfile);
+    let log_window_end_ns = unix_now_ns();
     warnings.extend(after_read.warnings);
-    let after = after_read.entries;
+    let after_ordered = after_read.ordered_entries;
     let mut changed_id = None;
-    let mut message = if let Some(changed) = detect_changed(&before, &after) {
+    let changed = detect_latest_watch_event(&before, &before_ordered, &after_ordered).or_else(|| {
+        detect_latest_watch_event_from_logs(log_window_start_ns, log_window_end_ns, &after_ordered)
+    });
+    let mut message = if let Some(changed) = changed {
         db.upsert_seen(&changed.id, &changed.title, &changed.ep)?;
         changed_id = Some(changed.id);
         format!(
             "Recorded last seen: {} | episode {}",
             changed.title, changed.ep
         )
+    } else if history_file_touched(before_sig, after_sig) && before_ordered != after_ordered {
+        "History changed but no parseable watch entry was detected from this run.".to_string()
     } else {
         "No new history entry detected from this run.".to_string()
     };
@@ -716,15 +842,15 @@ fn resolve_ani_cli_bin() -> PathBuf {
     PathBuf::from("ani-cli")
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PlaybackOutcome {
     success: bool,
-    final_episode: Option<u32>,
+    final_episode: Option<String>,
 }
 
 fn run_ani_cli_continue(
     item: &crate::db::SeenEntry,
-    stored_episode: u32,
+    stored_episode: &str,
 ) -> Result<PlaybackOutcome> {
     let temp_hist_dir = make_temp_hist_dir()?;
     let histfile = temp_hist_dir.join("ani-hsts");
@@ -756,7 +882,7 @@ fn run_ani_cli_continue(
         hist_read
             .entries
             .get(&item.ani_id)
-            .and_then(|entry| parse_episode_u32(&entry.ep))
+            .map(|entry| entry.ep.clone())
     } else {
         None
     };
@@ -767,12 +893,12 @@ fn run_ani_cli_continue(
     })
 }
 
-fn run_ani_cli_episode(title: &str, episode: u32) -> Result<bool> {
+fn run_ani_cli_episode(title: &str, episode: &str) -> Result<bool> {
     let ani_cli_bin = resolve_ani_cli_bin();
     let status = ProcessCommand::new(&ani_cli_bin)
         .arg(title)
         .arg("-e")
-        .arg(episode.to_string())
+        .arg(episode)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -783,7 +909,7 @@ fn run_ani_cli_episode(title: &str, episode: u32) -> Result<bool> {
 
 fn run_ani_cli_episode_with_global_tracking(
     item: &crate::db::SeenEntry,
-    episode: u32,
+    episode: &str,
 ) -> Result<PlaybackOutcome> {
     let histfile = ani_cli_histfile();
     let before_read = read_hist_map(&histfile);
@@ -801,7 +927,7 @@ fn run_ani_cli_episode_with_global_tracking(
             .entries
             .get(&item.ani_id)
             .or_else(|| before.get(&item.ani_id))
-            .and_then(|entry| parse_episode_u32(&entry.ep))
+            .map(|entry| entry.ep.clone())
     } else {
         None
     };
@@ -843,6 +969,7 @@ fn ani_cli_histfile() -> PathBuf {
 #[derive(Debug, Default)]
 struct HistRead {
     entries: HashMap<String, HistEntry>,
+    ordered_entries: Vec<HistEntry>,
     warnings: Vec<String>,
 }
 
@@ -856,6 +983,7 @@ fn read_hist_map(path: &Path) -> HistRead {
         Err(err) => {
             return HistRead {
                 entries: HashMap::new(),
+                ordered_entries: Vec::new(),
                 warnings: vec![format!(
                     "failed to read ani-cli history at {}: {}",
                     path.display(),
@@ -865,7 +993,7 @@ fn read_hist_map(path: &Path) -> HistRead {
         }
     };
 
-    let (entries, skipped_lines) = parse_hist_map(&raw);
+    let (entries, ordered_entries, skipped_lines) = parse_hist_map(&raw);
     let mut warnings = Vec::new();
     if skipped_lines > 0 {
         warnings.push(format!(
@@ -874,40 +1002,63 @@ fn read_hist_map(path: &Path) -> HistRead {
         ));
     }
 
-    HistRead { entries, warnings }
+    HistRead {
+        entries,
+        ordered_entries,
+        warnings,
+    }
 }
 
-fn parse_hist_map(raw: &str) -> (HashMap<String, HistEntry>, usize) {
+fn parse_hist_map(raw: &str) -> (HashMap<String, HistEntry>, Vec<HistEntry>, usize) {
     let mut map = HashMap::new();
+    let mut ordered_entries = Vec::new();
     let mut skipped_lines = 0;
     for line in raw.lines() {
         match parse_hist_line(line) {
             Some(entry) => {
+                ordered_entries.push(entry.clone());
                 map.insert(entry.id.clone(), entry);
             }
             None if !line.trim().is_empty() => skipped_lines += 1,
             None => {}
         }
     }
-    (map, skipped_lines)
+    (map, ordered_entries, skipped_lines)
 }
 
 fn parse_hist_line(line: &str) -> Option<HistEntry> {
-    if line.trim().is_empty() {
-        return None;
-    }
-    let mut parts = line.splitn(3, '\t');
-    let ep = parts.next()?.trim();
-    let id = parts.next()?.trim();
-    let title = parts.next()?.trim();
-    if ep.is_empty() || id.is_empty() || title.is_empty() {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
         return None;
     }
 
+    if trimmed.contains('\t') {
+        let mut parts = trimmed.splitn(3, '\t');
+        let ep = parts.next()?.trim();
+        let id = parts.next()?.trim();
+        let title = parts.next()?.trim();
+        if ep.is_empty() || id.is_empty() || title.is_empty() {
+            return None;
+        }
+        return Some(HistEntry {
+            ep: ep.to_string(),
+            id: id.to_string(),
+            title: title.to_string(),
+        });
+    }
+
+    // Fallback for environments where ani-cli history lines are space-separated.
+    let mut parts = trimmed.split_whitespace();
+    let ep = parts.next()?.trim();
+    let id = parts.next()?.trim();
+    let title = parts.collect::<Vec<_>>().join(" ");
+    if ep.is_empty() || id.is_empty() || title.trim().is_empty() {
+        return None;
+    }
     Some(HistEntry {
         ep: ep.to_string(),
         id: id.to_string(),
-        title: title.to_string(),
+        title: title.trim().to_string(),
     })
 }
 
@@ -918,23 +1069,192 @@ fn append_history_warnings(message: &mut String, warnings: &[String]) {
     }
 }
 
-fn detect_changed(
+fn detect_changed_latest(
     before: &HashMap<String, HistEntry>,
-    after: &HashMap<String, HistEntry>,
+    after_ordered: &[HistEntry],
 ) -> Option<HistEntry> {
-    let mut changed = Vec::new();
-
-    for (id, current) in after {
-        match before.get(id) {
-            None => changed.push(current.clone()),
+    // Walk from the most recent history lines to pick the last meaningful change deterministically.
+    let mut seen_ids = HashSet::new();
+    for current in after_ordered.iter().rev() {
+        if !seen_ids.insert(current.id.as_str()) {
+            continue;
+        }
+        match before.get(&current.id) {
+            None => return Some(current.clone()),
             Some(prev) if prev.ep != current.ep || prev.title != current.title => {
-                changed.push(current.clone())
+                return Some(current.clone());
             }
             _ => {}
         }
     }
+    None
+}
 
-    changed.into_iter().next()
+fn added_entries(before_ordered: &[HistEntry], after_ordered: &[HistEntry]) -> Vec<HistEntry> {
+    let mut before_counts: HashMap<HistEntry, usize> = HashMap::new();
+    for entry in before_ordered {
+        *before_counts.entry(entry.clone()).or_insert(0) += 1;
+    }
+
+    let mut added = Vec::new();
+    for entry in after_ordered {
+        match before_counts.get_mut(entry) {
+            Some(count) if *count > 0 => *count -= 1,
+            _ => added.push(entry.clone()),
+        }
+    }
+    added
+}
+
+fn detect_latest_added_entry(
+    before: &HashMap<String, HistEntry>,
+    before_ordered: &[HistEntry],
+    after_ordered: &[HistEntry],
+) -> Option<HistEntry> {
+    let added = added_entries(before_ordered, after_ordered);
+    if added.is_empty() {
+        return None;
+    }
+
+    // Prefer the newest meaningful added line. If added lines are all duplicates,
+    // use the newest duplicate so same-episode replays still register.
+    for current in added.iter().rev() {
+        match before.get(&current.id) {
+            None => return Some(current.clone()),
+            Some(prev) if prev.ep != current.ep || prev.title != current.title => {
+                return Some(current.clone());
+            }
+            _ => {}
+        };
+    }
+    added.last().cloned()
+}
+
+fn detect_latest_watch_event(
+    before: &HashMap<String, HistEntry>,
+    before_ordered: &[HistEntry],
+    after_ordered: &[HistEntry],
+) -> Option<HistEntry> {
+    detect_latest_added_entry(before, before_ordered, after_ordered)
+        .or_else(|| detect_changed_latest(before, after_ordered))
+}
+
+fn read_histfile_sig(path: &Path) -> Option<HistFileSig> {
+    let meta = fs::metadata(path).ok()?;
+    let len = meta.len();
+    let modified_ns = meta
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(HistFileSig { len, modified_ns })
+}
+
+fn history_file_touched(before: Option<HistFileSig>, after: Option<HistFileSig>) -> bool {
+    before != after
+}
+
+fn unix_now_ns() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+fn parse_short_unix_ts_ns(raw: &str) -> Option<u128> {
+    let (secs_raw, frac_raw) = raw.split_once('.').unwrap_or((raw, ""));
+    let secs = secs_raw.parse::<u128>().ok()?;
+    let mut frac_digits = frac_raw
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>();
+    if frac_digits.len() > 9 {
+        frac_digits.truncate(9);
+    }
+    while frac_digits.len() < 9 {
+        frac_digits.push('0');
+    }
+    let frac_ns = if frac_digits.is_empty() {
+        0
+    } else {
+        frac_digits.parse::<u128>().ok()?
+    };
+    Some(secs.saturating_mul(1_000_000_000).saturating_add(frac_ns))
+}
+
+fn parse_journal_ani_cli_line(line: &str) -> Option<(u128, String)> {
+    let mut parts = line.splitn(2, ' ');
+    let ts_raw = parts.next()?;
+    let rest = parts.next()?;
+    let ts_ns = parse_short_unix_ts_ns(ts_raw)?;
+    let (_, msg) = rest.split_once(": ")?;
+    Some((ts_ns, msg.trim().to_string()))
+}
+
+fn ani_cli_log_key(title: &str, episode: &str) -> String {
+    let title_prefix = title.split('(').next().unwrap_or(title);
+    let normalized_title = title_prefix
+        .chars()
+        .filter(|ch| !ch.is_ascii_punctuation())
+        .collect::<String>();
+    format!("{normalized_title}{episode}")
+}
+
+fn detect_log_matched_entry(message: &str, after_ordered: &[HistEntry]) -> Option<HistEntry> {
+    let target = message.trim();
+    for entry in after_ordered.iter().rev() {
+        if ani_cli_log_key(&entry.title, &entry.ep) == target {
+            return Some(entry.clone());
+        }
+    }
+    None
+}
+
+fn detect_latest_watch_event_from_logs(
+    start_ns: u128,
+    end_ns: u128,
+    after_ordered: &[HistEntry],
+) -> Option<HistEntry> {
+    if after_ordered.is_empty() {
+        return None;
+    }
+
+    let since_secs = start_ns / 1_000_000_000;
+    let until_secs = (end_ns / 1_000_000_000).saturating_add(5);
+    let output = ProcessCommand::new("journalctl")
+        .arg("-t")
+        .arg("ani-cli")
+        .arg("--since")
+        .arg(format!("@{since_secs}"))
+        .arg("--until")
+        .arg(format!("@{until_secs}"))
+        .arg("--output=short-unix")
+        .arg("--no-pager")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let upper_bound_ns = end_ns.saturating_add(5_000_000_000);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut logs = Vec::new();
+    for line in stdout.lines() {
+        if let Some((ts_ns, msg)) = parse_journal_ani_cli_line(line)
+            && ts_ns >= start_ns
+            && ts_ns <= upper_bound_ns
+        {
+            logs.push((ts_ns, msg));
+        }
+    }
+
+    for (_, message) in logs.iter().rev() {
+        if let Some(entry) = detect_log_matched_entry(message, after_ordered) {
+            return Some(entry);
+        }
+    }
+    None
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -973,10 +1293,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_hist_line_accepts_space_separated_format_with_episode_zero() {
+        let entry = parse_hist_line("0 show-0 Episode Zero Title").expect("line should parse");
+        assert_eq!(entry.ep, "0");
+        assert_eq!(entry.id, "show-0");
+        assert_eq!(entry.title, "Episode Zero Title");
+    }
+
+    #[test]
+    fn parse_hist_line_preserves_decimal_episode_value() {
+        let entry = parse_hist_line("13.5\tshow-135\tMid-season OVA").expect("line should parse");
+        assert_eq!(entry.ep, "13.5");
+        assert_eq!(entry.id, "show-135");
+    }
+
+    #[test]
     fn parse_hist_map_ignores_malformed_lines() {
         let raw = "1\tid-1\tShow One\nbadline\n\tid-2\tMissing episode\n2\tid-2\tShow Two\n";
-        let (parsed, skipped) = parse_hist_map(raw);
+        let (parsed, ordered, skipped) = parse_hist_map(raw);
         assert_eq!(parsed.len(), 2);
+        assert_eq!(ordered.len(), 2);
         assert_eq!(skipped, 2);
         assert_eq!(
             parsed.get("id-2").map(|entry| entry.title.as_str()),
@@ -985,7 +1321,7 @@ mod tests {
     }
 
     #[test]
-    fn detect_changed_returns_new_or_updated_entry() {
+    fn detect_changed_latest_returns_most_recent_changed_entry() {
         let mut before = HashMap::new();
         before.insert(
             "id-1".to_string(),
@@ -996,18 +1332,205 @@ mod tests {
             },
         );
 
-        let mut after = HashMap::new();
-        after.insert(
-            "id-1".to_string(),
+        let after_ordered = vec![
+            HistEntry {
+                ep: "1".to_string(),
+                id: "id-1".to_string(),
+                title: "Show One".to_string(),
+            },
+            HistEntry {
+                ep: "0".to_string(),
+                id: "id-2".to_string(),
+                title: "Show Two".to_string(),
+            },
             HistEntry {
                 ep: "2".to_string(),
                 id: "id-1".to_string(),
                 title: "Show One".to_string(),
             },
-        );
+        ];
 
-        let changed = detect_changed(&before, &after).expect("entry should be detected as changed");
+        let changed = detect_changed_latest(&before, &after_ordered)
+            .expect("entry should be detected as changed");
         assert_eq!(changed.id, "id-1");
         assert_eq!(changed.ep, "2");
+    }
+
+    #[test]
+    fn detect_changed_latest_handles_episode_zero() {
+        let before = HashMap::new();
+        let after_ordered = vec![HistEntry {
+            ep: "0".to_string(),
+            id: "id-0".to_string(),
+            title: "Episode Zero Show".to_string(),
+        }];
+
+        let changed = detect_changed_latest(&before, &after_ordered)
+            .expect("episode 0 entry should be treated as a valid change");
+        assert_eq!(changed.id, "id-0");
+        assert_eq!(changed.ep, "0");
+    }
+
+    #[test]
+    fn detect_latest_watch_event_accepts_appended_duplicate_episode_zero() {
+        let before_entry = HistEntry {
+            ep: "0".to_string(),
+            id: "id-0".to_string(),
+            title: "Episode Zero Show".to_string(),
+        };
+
+        let mut before_map = HashMap::new();
+        before_map.insert(before_entry.id.clone(), before_entry.clone());
+
+        let before_ordered = vec![before_entry.clone()];
+        let after_ordered = vec![before_entry.clone(), before_entry.clone()];
+
+        let changed = detect_latest_watch_event(&before_map, &before_ordered, &after_ordered)
+            .expect("appended duplicate entry should count as a watch event");
+        assert_eq!(changed.id, "id-0");
+        assert_eq!(changed.ep, "0");
+    }
+
+    #[test]
+    fn detect_latest_watch_event_prefers_new_added_entry_over_unchanged_trailing_line() {
+        let before_a = HistEntry {
+            ep: "2".to_string(),
+            id: "id-a".to_string(),
+            title: "Show A".to_string(),
+        };
+        let before_b = HistEntry {
+            ep: "7".to_string(),
+            id: "id-b".to_string(),
+            title: "Show B".to_string(),
+        };
+        let mut before_map = HashMap::new();
+        before_map.insert(before_a.id.clone(), before_a.clone());
+        before_map.insert(before_b.id.clone(), before_b.clone());
+
+        let before_ordered = vec![before_a.clone(), before_b.clone()];
+        let after_ordered = vec![
+            before_a.clone(),
+            before_b.clone(),
+            HistEntry {
+                ep: "0".to_string(),
+                id: "id-new".to_string(),
+                title: "Brand New Show".to_string(),
+            },
+            before_b.clone(),
+        ];
+
+        let changed = detect_latest_watch_event(&before_map, &before_ordered, &after_ordered)
+            .expect("new appended entry should be selected");
+        assert_eq!(changed.id, "id-new");
+        assert_eq!(changed.ep, "0");
+    }
+
+    #[test]
+    fn detect_latest_watch_event_returns_none_when_content_is_unchanged() {
+        let before_entry = HistEntry {
+            ep: "1".to_string(),
+            id: "id-existing".to_string(),
+            title: "Existing Show".to_string(),
+        };
+        let mut before_map = HashMap::new();
+        before_map.insert(before_entry.id.clone(), before_entry.clone());
+
+        let before_ordered = vec![before_entry.clone()];
+        let after_ordered = vec![before_entry];
+
+        let changed = detect_latest_watch_event(&before_map, &before_ordered, &after_ordered);
+        assert!(changed.is_none());
+    }
+
+    #[test]
+    fn history_file_touched_detects_metadata_change() {
+        let before = Some(HistFileSig {
+            len: 100,
+            modified_ns: 1000,
+        });
+        let after = Some(HistFileSig {
+            len: 100,
+            modified_ns: 1001,
+        });
+        assert!(history_file_touched(before, after));
+    }
+
+    #[test]
+    fn history_file_touched_ignores_same_metadata() {
+        let sig = Some(HistFileSig {
+            len: 100,
+            modified_ns: 1000,
+        });
+        assert!(!history_file_touched(sig, sig));
+    }
+
+    #[test]
+    fn added_entries_detects_inserted_and_duplicate_new_occurrences() {
+        let before = vec![
+            HistEntry {
+                ep: "1".to_string(),
+                id: "a".to_string(),
+                title: "A".to_string(),
+            },
+            HistEntry {
+                ep: "2".to_string(),
+                id: "b".to_string(),
+                title: "B".to_string(),
+            },
+        ];
+        let after = vec![
+            before[0].clone(),
+            HistEntry {
+                ep: "0".to_string(),
+                id: "c".to_string(),
+                title: "C".to_string(),
+            },
+            before[1].clone(),
+            HistEntry {
+                ep: "2".to_string(),
+                id: "b".to_string(),
+                title: "B".to_string(),
+            },
+        ];
+
+        let added = added_entries(&before, &after);
+        assert_eq!(added.len(), 2);
+        assert_eq!(added[0].id, "c");
+        assert_eq!(added[1].id, "b");
+    }
+
+    #[test]
+    fn parse_journal_ani_cli_line_extracts_timestamp_and_message() {
+        let line = "1772039324.974245 fedora ani-cli[407433]: Shingeki no Kyojin 0";
+        let (ts_ns, msg) = parse_journal_ani_cli_line(line).expect("line should parse");
+        assert_eq!(msg, "Shingeki no Kyojin 0");
+        assert_eq!(ts_ns, 1_772_039_324_974_245_000);
+    }
+
+    #[test]
+    fn ani_cli_log_key_matches_ani_cli_logger_format() {
+        let key = ani_cli_log_key("Death Note: Rewrite (1 episodes)", "1");
+        assert_eq!(key, "Death Note Rewrite 1");
+    }
+
+    #[test]
+    fn detect_log_matched_entry_handles_episode_zero() {
+        let after_ordered = vec![
+            HistEntry {
+                ep: "1".to_string(),
+                id: "id-1".to_string(),
+                title: "Death Note (37 episodes)".to_string(),
+            },
+            HistEntry {
+                ep: "0".to_string(),
+                id: "id-2".to_string(),
+                title: "Shingeki no Kyojin (27 episodes)".to_string(),
+            },
+        ];
+
+        let matched = detect_log_matched_entry("Shingeki no Kyojin 0", &after_ordered)
+            .expect("message should map to history entry");
+        assert_eq!(matched.id, "id-2");
+        assert_eq!(matched.ep, "0");
     }
 }

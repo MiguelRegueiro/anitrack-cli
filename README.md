@@ -24,7 +24,8 @@ ani-cli --help
 - `anitrack start`
   - Runs `ani-cli`
   - Reads `ani-cli` history before and after playback
-  - Stores the changed entry as the latest seen show/episode
+  - Stores the latest meaningful watch change (new show ID or updated episode/title)
+  - If history content is unchanged for that run, tries a short-window `ani-cli` log match to resolve the watched entry
 - `anitrack next`
   - Loads the most recently seen show from AniTrack DB
   - Plays the next episode using `ani-cli -c` with a seeded temporary history entry
@@ -41,6 +42,7 @@ ani-cli --help
   - `Up/Down` selects show
   - `Left/Right` selects action (`Next` / `Replay`, default `Next`)
   - `s` launches search (runs `ani-cli` UI and returns to the TUI after exit)
+  - Search sync uses the same detection rules as `start` (history delta first, then log fallback)
   - `d` deletes selected tracked entry (with confirmation prompt)
   - `Enter` runs the selected action for the selected show
   - `q` quits
@@ -65,8 +67,12 @@ cargo run -- tui
 History line format expected by AniTrack:
 `episode<TAB>id<TAB>title`
 
+AniTrack also accepts space-separated history lines when tabs are not present:
+`episode id title...`
+
 ## Behavior Notes
 - If the database or parent directory does not exist, AniTrack creates them automatically.
 - If `anitrack next` or `anitrack replay` playback fails or is interrupted, progress is not updated.
 - If you navigate episodes inside `ani-cli` after playback starts (for example using its `next` option), AniTrack stores the last episode reached when the session ends successfully.
 - If no prior entry exists, `next` and `replay` instruct you to run `anitrack start` first.
+- TUI/start sync only records entries tied to the current run and does not backfill arbitrary old history rows, so deleted DB entries are not resurrected unless watched again.
