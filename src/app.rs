@@ -100,7 +100,7 @@ fn run_replay(db: &Database) -> Result<()> {
             println!("  Title: {}", item.title);
             println!("  Episode: {}", item.last_episode);
 
-            let outcome = run_ani_cli_episode_with_global_tracking(&item, &item.last_episode);
+            let outcome = run_ani_cli_replay(&item);
             let outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(err) => {
@@ -162,6 +162,11 @@ struct PendingDelete {
     title: String,
 }
 
+#[derive(Debug, Clone)]
+struct PendingNotice {
+    message: String,
+}
+
 fn run_tui(db: &Database) -> Result<()> {
     let mut session = TuiSession::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))
@@ -173,6 +178,7 @@ fn run_tui(db: &Database) -> Result<()> {
     table_state.select((!items.is_empty()).then_some(0));
     let mut action = TuiAction::Next;
     let mut pending_delete = None::<PendingDelete>;
+    let mut pending_notice = None::<PendingNotice>;
     let mut episode_lists_by_id: HashMap<String, Option<Vec<String>>> = HashMap::new();
     let mut status = if items.is_empty() {
         status_info("No tracked entries yet. Press `s` to search or run `anitrack start`.")
@@ -190,6 +196,7 @@ fn run_tui(db: &Database) -> Result<()> {
                 action,
                 &status,
                 pending_delete.as_ref(),
+                pending_notice.as_ref(),
                 &episode_lists_by_id,
             )
         })?;
@@ -202,6 +209,11 @@ fn run_tui(db: &Database) -> Result<()> {
             continue;
         };
         if key.kind != KeyEventKind::Press {
+            continue;
+        }
+
+        if pending_notice.is_some() {
+            pending_notice = None;
             continue;
         }
 
@@ -287,6 +299,25 @@ fn run_tui(db: &Database) -> Result<()> {
                 if selected >= items.len() {
                     continue;
                 }
+                let selected_item = &items[selected];
+
+                if matches!(action, TuiAction::Next) {
+                    let total_eps = parse_title_and_total_eps(&selected_item.title).1;
+                    let episode_list = episode_lists_by_id
+                        .get(&selected_item.ani_id)
+                        .and_then(|episodes| episodes.as_ref())
+                        .map(|episodes| episodes.as_slice());
+                    if !has_next_episode(&selected_item.last_episode, total_eps, episode_list) {
+                        pending_notice = Some(PendingNotice {
+                            message: format!(
+                                "Already at the last available episode for {}.\n\nPress any key to continue.",
+                                truncate(&selected_item.title, 50)
+                            ),
+                        });
+                        status = status_info("No next episode available.");
+                        continue;
+                    }
+                }
 
                 let selected_id = items[selected].ani_id.clone();
                 let selected_title = items[selected].title.clone();
@@ -321,6 +352,7 @@ fn draw_tui(
     action: TuiAction,
     status: &str,
     pending_delete: Option<&PendingDelete>,
+    pending_notice: Option<&PendingNotice>,
     episode_lists_by_id: &HashMap<String, Option<Vec<String>>>,
 ) {
     let bg = Block::default().style(Style::default().bg(Color::Black));
@@ -514,6 +546,13 @@ fn draw_tui(
             .alignment(Alignment::Center)
             .block(panel_block("Confirm Delete"));
         frame.render_widget(popup, popup_area);
+    } else if let Some(notice) = pending_notice {
+        let popup_area = centered_rect(70, 18, frame.area());
+        frame.render_widget(Clear, popup_area);
+        let popup = Paragraph::new(notice.message.clone())
+            .alignment(Alignment::Center)
+            .block(panel_block("No More Episodes"));
+        frame.render_widget(popup, popup_area);
     }
 }
 
@@ -625,7 +664,7 @@ fn run_selected_action(
             }
         }
         TuiAction::Replay => {
-            let outcome = run_ani_cli_episode_with_global_tracking(item, &item.last_episode)?;
+            let outcome = run_ani_cli_replay(item)?;
             if outcome.success {
                 let updated_ep = outcome
                     .final_episode
@@ -962,6 +1001,14 @@ fn run_ani_cli_episode_with_global_tracking(
         success,
         final_episode,
     })
+}
+
+fn run_ani_cli_replay(item: &crate::db::SeenEntry) -> Result<PlaybackOutcome> {
+    if let Some(seed_episode) = resolve_replay_seed_episode(item) {
+        run_ani_cli_continue(item, &seed_episode)
+    } else {
+        run_ani_cli_episode_with_global_tracking(item, &item.last_episode)
+    }
 }
 
 fn make_temp_hist_dir() -> Result<PathBuf> {
@@ -1379,6 +1426,52 @@ fn fetch_episode_labels(ani_id: &str, total_hint: Option<u32>) -> Option<Vec<Str
     Some(episodes)
 }
 
+fn replay_seed_episode(last_episode: &str, episode_list: Option<&[String]>) -> Option<String> {
+    if let Some(episodes) = episode_list
+        && let Some(idx) = episodes
+            .iter()
+            .position(|episode| episode_labels_match(episode, last_episode))
+    {
+        if idx > 0 {
+            return episodes.get(idx - 1).cloned();
+        }
+        return None;
+    }
+
+    let current = parse_episode_u32(last_episode)?;
+    if current > 1 {
+        Some((current - 1).to_string())
+    } else {
+        None
+    }
+}
+
+fn resolve_replay_seed_episode(item: &crate::db::SeenEntry) -> Option<String> {
+    let total_hint = parse_title_and_total_eps(&item.title).1;
+    let episodes = fetch_episode_labels(&item.ani_id, total_hint);
+    replay_seed_episode(&item.last_episode, episodes.as_deref())
+}
+
+fn has_next_episode(
+    last_episode: &str,
+    total_episodes: Option<u32>,
+    episode_list: Option<&[String]>,
+) -> bool {
+    if let Some(episodes) = episode_list
+        && let Some(idx) = episodes
+            .iter()
+            .position(|episode| episode_labels_match(episode, last_episode))
+    {
+        return idx + 1 < episodes.len();
+    }
+
+    if let (Some(total), Some(current)) = (total_episodes, parse_episode_u32(last_episode)) {
+        return current < total;
+    }
+
+    true
+}
+
 fn episode_ordinal_from_list(last_episode: &str, episodes: &[String]) -> Option<u32> {
     episodes
         .iter()
@@ -1768,5 +1861,56 @@ mod tests {
     fn format_episode_progress_text_uses_plain_numeric_when_ordinal_matches() {
         let text = format_episode_progress_text("12", 24, None);
         assert_eq!(text, "12 of 24");
+    }
+
+    #[test]
+    fn replay_seed_episode_uses_previous_episode_from_list() {
+        let episodes = vec![
+            "0".to_string(),
+            "1".to_string(),
+            "2".to_string(),
+            "13".to_string(),
+            "13.5".to_string(),
+        ];
+
+        let seed = replay_seed_episode("13.5", Some(&episodes));
+        assert_eq!(seed.as_deref(), Some("13"));
+    }
+
+    #[test]
+    fn replay_seed_episode_none_for_first_episode_in_list() {
+        let episodes = vec!["0".to_string(), "1".to_string(), "2".to_string()];
+        let seed = replay_seed_episode("0", Some(&episodes));
+        assert!(seed.is_none());
+    }
+
+    #[test]
+    fn replay_seed_episode_falls_back_to_numeric_when_list_missing() {
+        let seed = replay_seed_episode("5", None);
+        assert_eq!(seed.as_deref(), Some("4"));
+
+        let seed_first = replay_seed_episode("1", None);
+        assert!(seed_first.is_none());
+    }
+
+    #[test]
+    fn has_next_episode_uses_episode_list_for_non_linear_numbering() {
+        let mut episodes = vec!["0".to_string()];
+        for ep in 1..=13 {
+            episodes.push(ep.to_string());
+        }
+        episodes.push("13.5".to_string());
+        for ep in 14..=25 {
+            episodes.push(ep.to_string());
+        }
+
+        assert!(!has_next_episode("25", Some(27), Some(&episodes)));
+        assert!(has_next_episode("24", Some(27), Some(&episodes)));
+    }
+
+    #[test]
+    fn has_next_episode_falls_back_to_numeric_when_list_missing() {
+        assert!(has_next_episode("25", Some(27), None));
+        assert!(!has_next_episode("27", Some(27), None));
     }
 }
