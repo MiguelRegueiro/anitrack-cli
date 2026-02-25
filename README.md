@@ -8,17 +8,42 @@ This project does not replace `ani-cli`; it orchestrates and extends the workflo
 
 ## Requirements
 - [`ani-cli`](https://github.com/pystardust/ani-cli) installed and available on your `PATH` (required)
-- Rust toolchain (`cargo`) for building/running AniTrack
+- Rust toolchain (`cargo`) to install AniTrack from crates.io
 
 ### Install `ani-cli`
 Follow the official installation instructions in the `ani-cli` repository.
 
 After installation, verify it is available:
 ```bash
-ani-cli --help
+ani-cli --version
 ```
 
-## Commands
+### Install AniTrack
+Install from crates.io (recommended):
+```bash
+cargo install anitrack
+```
+
+Verify installation:
+```bash
+anitrack --version
+```
+
+Upgrade to the latest release:
+```bash
+cargo install anitrack --force
+```
+
+## Quick Start
+```bash
+anitrack
+anitrack start
+anitrack next
+anitrack replay
+anitrack list
+```
+
+## Command Reference
 - `anitrack`
   - Opens the TUI (default command)
 - `anitrack start`
@@ -47,7 +72,11 @@ ani-cli --help
   - `Enter` runs the selected action for the selected show
   - `q` quits
 
-## Usage
+<details>
+<summary><strong>Run From Source (Development)</strong></summary>
+
+For local development, run from the repository root:
+
 ```bash
 cargo run
 cargo run -- start
@@ -56,6 +85,8 @@ cargo run -- replay
 cargo run -- list
 cargo run -- tui
 ```
+
+</details>
 
 ## Data and Paths
 - AniTrack database path:
