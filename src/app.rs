@@ -146,7 +146,7 @@ fn run_list(db: &Database) -> Result<()> {
             truncate(&item.ani_id, 20),
             truncate(&item.title, 40),
             item.last_episode,
-            item.last_seen_at
+            format_last_seen_display(&item.last_seen_at)
         );
     }
     Ok(())

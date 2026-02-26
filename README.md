@@ -2,36 +2,64 @@
 
 AniTrack is a companion CLI for `ani-cli`. It adds watch-progress tracking and navigation while delegating search and playback to `ani-cli`.
 
+## Screenshot
+![AniTrack TUI showing tracked entries for Attack on Titan and Death Note](screenshots/anitrack-tui.png)
+
 ## Credit
 AniTrack depends on [`ani-cli`](https://github.com/pystardust/ani-cli) for anime search and streaming playback.
 This project does not replace `ani-cli`; it orchestrates and extends the workflow around it.
 
-## Requirements
-- [`ani-cli`](https://github.com/pystardust/ani-cli) installed and available on your `PATH` (required)
-- Rust toolchain (`cargo`) to install AniTrack from crates.io
+## Installation
 
-### Install `ani-cli`
-Follow the official installation instructions in the `ani-cli` repository.
-
-After installation, verify it is available:
+### Arch Linux (AUR)
+Recommended (prebuilt binary, no Rust toolchain required):
 ```bash
-ani-cli --version
+paru -S anitrack-bin
 ```
 
-### Install AniTrack
-Install from crates.io (recommended):
+Source build (Rust toolchain required only while building):
+```bash
+paru -S anitrack
+```
+
+Both AUR packages declare `ani-cli` as a dependency, so it is installed automatically if missing.
+Equivalent `yay` commands also work if you use `yay` instead of `paru`.
+
+### crates.io (any distro with Rust)
+Install from crates.io:
 ```bash
 cargo install anitrack
 ```
+
+This method does not install [`ani-cli`](https://github.com/pystardust/ani-cli), so install `ani-cli` separately and ensure it is on your `PATH`.
 
 Verify installation:
 ```bash
 anitrack --version
 ```
 
-Upgrade to the latest release:
+Upgrade to the latest release (crates.io):
 ```bash
 cargo install anitrack --force
+```
+
+### Troubleshooting (Arch)
+If `paru -S anitrack` fails to build on your system, install the prebuilt package instead:
+```bash
+paru -S anitrack-bin
+```
+
+### Uninstall
+AUR:
+```bash
+paru -Rns anitrack-bin
+# or
+paru -Rns anitrack
+```
+
+crates.io:
+```bash
+cargo uninstall anitrack
 ```
 
 ## Quick Start
