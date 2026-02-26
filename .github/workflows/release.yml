@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -22,11 +26,33 @@ jobs:
         id: version
         run: |
           CARGO_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          LOCK_VERSION="$(
+            awk '
+              $0 == "[[package]]" { in_pkg = 0; next }
+              $0 == "name = \"anitrack\"" { in_pkg = 1; next }
+              in_pkg && $1 == "version" {
+                gsub(/"/, "", $3)
+                print $3
+                exit
+              }
+            ' Cargo.lock
+          )"
           TAG_NAME="${GITHUB_REF_NAME}"
           TAG_VERSION="${TAG_NAME#v}"
 
           if [ -z "${CARGO_VERSION}" ]; then
             echo "Failed to read version from Cargo.toml"
+            exit 1
+          fi
+
+          if [ -z "${LOCK_VERSION}" ]; then
+            echo "Failed to read anitrack version from Cargo.lock"
+            exit 1
+          fi
+
+          if [ "${CARGO_VERSION}" != "${LOCK_VERSION}" ]; then
+            echo "Cargo.toml version (${CARGO_VERSION}) does not match Cargo.lock (${LOCK_VERSION})"
+            echo "Run cargo test --all-features locally to refresh Cargo.lock, commit it, then retag."
             exit 1
           fi
 
@@ -141,9 +167,15 @@ jobs:
           {
             echo "## AUR update values"
             echo ""
+            echo "### anitrack-bin (prebuilt)"
             echo "- pkgver: \`${VERSION}\`"
             echo "- source URL: \`${URL}\`"
             echo "- sha256sums: \`${SHA256}\`"
             echo ""
-            echo "Use those values in your AUR package repos (\`anitrack\` / \`anitrack-bin\`) and regenerate \`.SRCINFO\`."
+            echo "### anitrack (source build)"
+            echo "- pkgver: \`${VERSION}\`"
+            echo "- source: \`https://crates.io/api/v1/crates/anitrack/${VERSION}/download\`"
+            echo "- note: if you use pinned checksums, run \`updpkgsums\`."
+            echo ""
+            echo "Regenerate \`.SRCINFO\` and push both AUR repos."
           } >> "${GITHUB_STEP_SUMMARY}"
