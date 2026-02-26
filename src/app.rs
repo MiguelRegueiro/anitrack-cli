@@ -470,9 +470,8 @@ fn draw_tui(
             let episode_progress_text = total_eps
                 .map(|total| format_episode_progress_text(&item.last_episode, total, episode_list))
                 .unwrap_or_else(|| format!("{} of {}", item.last_episode, total_eps_text));
-            let gauge = total_eps.and_then(|total| {
-                build_progress_gauge(&item.last_episode, total, episode_list)
-            });
+            let gauge = total_eps
+                .and_then(|total| build_progress_gauge(&item.last_episode, total, episode_list));
             (
                 format!(
                     "Title\n{}\n\nEpisode\n{}\n\nAni ID\n{}\n\nLast Seen\n{}",
@@ -926,9 +925,14 @@ fn run_ani_cli_search(db: &Database) -> Result<(String, Option<String>)> {
     warnings.extend(after_read.warnings);
     let after_ordered = after_read.ordered_entries;
     let mut changed_id = None;
-    let changed = detect_latest_watch_event(&before, &before_ordered, &after_ordered).or_else(|| {
-        detect_latest_watch_event_from_logs(log_window_start_ns, log_window_end_ns, &after_ordered)
-    });
+    let changed =
+        detect_latest_watch_event(&before, &before_ordered, &after_ordered).or_else(|| {
+            detect_latest_watch_event_from_logs(
+                log_window_start_ns,
+                log_window_end_ns,
+                &after_ordered,
+            )
+        });
     let mut message = if let Some(changed) = changed {
         db.upsert_seen(&changed.id, &changed.title, &changed.ep)?;
         changed_id = Some(changed.id);
@@ -1879,8 +1883,8 @@ mod tests {
             episodes.push(ep.to_string());
         }
 
-        let (ratio, label) = build_progress_gauge("25", 27, Some(&episodes))
-            .expect("gauge should be generated");
+        let (ratio, label) =
+            build_progress_gauge("25", 27, Some(&episodes)).expect("gauge should be generated");
         assert!((ratio - 1.0).abs() < 0.000_001);
         assert_eq!(label, "27/27");
     }
