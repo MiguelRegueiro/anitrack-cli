@@ -347,6 +347,7 @@ fn run_tui(db: &Database) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_tui(
     frame: &mut Frame,
     items: &[crate::db::SeenEntry],
@@ -1303,9 +1304,7 @@ fn parse_short_unix_ts_ns(raw: &str) -> Option<u128> {
 }
 
 fn parse_journal_ani_cli_line(line: &str) -> Option<(u128, String)> {
-    let mut parts = line.splitn(2, ' ');
-    let ts_raw = parts.next()?;
-    let rest = parts.next()?;
+    let (ts_raw, rest) = line.split_once(' ')?;
     let ts_ns = parse_short_unix_ts_ns(ts_raw)?;
     let (_, msg) = rest.split_once(": ")?;
     Some((ts_ns, msg.trim().to_string()))
