@@ -139,3 +139,6 @@ AniTrack also accepts space-separated history lines when tabs are not present:
 ## License
 This project is licensed under the GNU General Public License v3.0 or later (`GPL-3.0-or-later`).
 See [LICENSE](LICENSE).
+
+## Release Automation
+Release workflow details (CI, GitHub Releases, crates.io publish, and AUR update values) are documented in [docs/release.md](docs/release.md).

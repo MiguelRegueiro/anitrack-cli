@@ -1,6 +1,7 @@
 /target
 .xdg/
-/docs/
+/docs/*
+!/docs/release.md
 
 # release artifacts
 dist/
