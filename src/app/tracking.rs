@@ -786,6 +786,7 @@ pub(crate) fn unix_now_ns() -> u128 {
         .unwrap_or(0)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn parse_short_unix_ts_ns(raw: &str) -> Option<u128> {
     let (secs_raw, frac_raw) = raw.split_once('.').unwrap_or((raw, ""));
     let secs = secs_raw.parse::<u128>().ok()?;
@@ -807,6 +808,7 @@ pub(crate) fn parse_short_unix_ts_ns(raw: &str) -> Option<u128> {
     Some(secs.saturating_mul(1_000_000_000).saturating_add(frac_ns))
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn parse_journal_ani_cli_line(line: &str) -> Option<(u128, String)> {
     let (ts_raw, rest) = line.split_once(' ')?;
     let ts_ns = parse_short_unix_ts_ns(ts_raw)?;
@@ -814,6 +816,7 @@ pub(crate) fn parse_journal_ani_cli_line(line: &str) -> Option<(u128, String)> {
     Some((ts_ns, msg.trim().to_string()))
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn ani_cli_log_key(title: &str, episode: &str) -> String {
     let title_prefix = title.split('(').next().unwrap_or(title);
     let mut key_raw = String::new();
@@ -823,6 +826,7 @@ pub(crate) fn ani_cli_log_key(title: &str, episode: &str) -> String {
     normalize_log_key(&key_raw)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn normalize_log_key(raw: &str) -> String {
     raw.chars()
         .filter(|ch| !ch.is_ascii_punctuation())
@@ -832,6 +836,7 @@ pub(crate) fn normalize_log_key(raw: &str) -> String {
         .join(" ")
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn detect_log_matched_entry(
     message: &str,
     after_ordered: &[HistEntry],

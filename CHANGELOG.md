@@ -7,9 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added `Previous` and `Select` actions to the TUI action bar, with left/right navigation and Enter execution.
+- Added tracked-show episode selection support in TUI (`Select`) so ani-cli opens episode selection for the currently selected show.
+
 ### Changed
-- Hardened release validation and clarified AUR update flow in release documentation and workflow behavior.
-- Release workflow now validates matching `CHANGELOG.md` sections and uses them as GitHub Release notes.
+- Refactored the monolithic `src/app.rs` into focused modules under `src/app/` (`mod`, `tui`, `tracking`, `episode`, `tests`) to improve maintainability and reduce coupling.
+- Improved TUI responsiveness by moving episode-list metadata fetches to a background worker and showing loading state in the Selected panel.
+- Improved release workflow safety and reliability:
+  - added workflow concurrency control for tag releases
+  - validated `Cargo.toml`/`Cargo.lock` version alignment
+  - required matching `CHANGELOG.md` version sections
+  - generated GitHub Release notes from changelog content
+  - gated crates.io publishing on successful validate/build/release jobs
+- Expanded CI checks from Linux-only to an OS matrix (`ubuntu-latest`, `macos-latest`, `windows-latest`).
+- Limited `journalctl` log-fallback probing to Linux targets; non-Linux targets now skip that path cleanly.
+
+### Fixed
+- Fixed TUI `Select` flow to target episode selection for the current tracked show instead of falling back to generic show search.
+- Fixed `Previous` episode handling across edge cases (`0`, decimal labels like `15.5`, and special numbering) by using resolved episode lists when available and safer numeric fallback behavior.
+- Fixed inconsistent `Previous` no-op UX by normalizing backend `no previous episode available` errors to the same `No More Episodes` info popup.
+- Fixed ani-cli log-key normalization for titles with missing space before trailing episode-count parentheses (for example `Naruto(220 episodes)`).
 
 ## [0.1.3] - 2026-02-26
 
