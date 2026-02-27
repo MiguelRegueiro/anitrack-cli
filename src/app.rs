@@ -6,6 +6,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
@@ -169,6 +170,31 @@ struct PendingNotice {
     message: String,
 }
 
+#[derive(Debug, Clone)]
+struct EpisodeListFetchResult {
+    ani_id: String,
+    episode_list: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+enum EpisodeListState {
+    Loading,
+    Ready(Option<Vec<String>>),
+}
+
+impl EpisodeListState {
+    fn episode_list(&self) -> Option<&[String]> {
+        match self {
+            Self::Ready(Some(episodes)) => Some(episodes.as_slice()),
+            Self::Loading | Self::Ready(None) => None,
+        }
+    }
+
+    fn is_loading(&self) -> bool {
+        matches!(self, Self::Loading)
+    }
+}
+
 fn run_tui(db: &Database) -> Result<()> {
     let mut session = TuiSession::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))
@@ -181,7 +207,8 @@ fn run_tui(db: &Database) -> Result<()> {
     let mut action = TuiAction::Next;
     let mut pending_delete = None::<PendingDelete>;
     let mut pending_notice = None::<PendingNotice>;
-    let mut episode_lists_by_id: HashMap<String, Option<Vec<String>>> = HashMap::new();
+    let mut episode_lists_by_id: HashMap<String, EpisodeListState> = HashMap::new();
+    let (episode_fetch_tx, episode_fetch_rx) = mpsc::channel::<EpisodeListFetchResult>();
     let mut status = if items.is_empty() {
         status_info("No tracked entries yet. Press `s` to search or run `anitrack start`.")
     } else {
@@ -189,7 +216,13 @@ fn run_tui(db: &Database) -> Result<()> {
     };
 
     loop {
-        ensure_selected_episode_list(&items, &table_state, &mut episode_lists_by_id);
+        drain_episode_fetch_results(&episode_fetch_rx, &mut episode_lists_by_id);
+        ensure_selected_episode_list(
+            &items,
+            &table_state,
+            &mut episode_lists_by_id,
+            &episode_fetch_tx,
+        );
         terminal.draw(|frame| {
             draw_tui(
                 frame,
@@ -307,8 +340,7 @@ fn run_tui(db: &Database) -> Result<()> {
                     let total_eps = parse_title_and_total_eps(&selected_item.title).1;
                     let episode_list = episode_lists_by_id
                         .get(&selected_item.ani_id)
-                        .and_then(|episodes| episodes.as_ref())
-                        .map(|episodes| episodes.as_slice());
+                        .and_then(EpisodeListState::episode_list);
                     if !has_next_episode(&selected_item.last_episode, total_eps, episode_list) {
                         pending_notice = Some(PendingNotice {
                             message: format!(
@@ -356,7 +388,7 @@ fn draw_tui(
     status: &str,
     pending_delete: Option<&PendingDelete>,
     pending_notice: Option<&PendingNotice>,
-    episode_lists_by_id: &HashMap<String, Option<Vec<String>>>,
+    episode_lists_by_id: &HashMap<String, EpisodeListState>,
 ) {
     let bg = Block::default().style(Style::default().bg(Color::Black));
     frame.render_widget(bg, frame.area());
@@ -463,25 +495,24 @@ fn draw_tui(
             let total_eps_text = total_eps
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "-".to_string());
-            let episode_list = episode_lists_by_id
-                .get(&item.ani_id)
-                .and_then(|episodes| episodes.as_ref())
-                .map(|episodes| episodes.as_slice());
+            let episode_state = episode_lists_by_id.get(&item.ani_id);
+            let episode_list = episode_state.and_then(EpisodeListState::episode_list);
             let episode_progress_text = total_eps
                 .map(|total| format_episode_progress_text(&item.last_episode, total, episode_list))
                 .unwrap_or_else(|| format!("{} of {}", item.last_episode, total_eps_text));
             let gauge = total_eps
                 .and_then(|total| build_progress_gauge(&item.last_episode, total, episode_list));
-            (
-                format!(
-                    "Title\n{}\n\nEpisode\n{}\n\nAni ID\n{}\n\nLast Seen\n{}",
-                    truncate(&title, 40),
-                    episode_progress_text,
-                    truncate(&item.ani_id, 28),
-                    format_last_seen_display(&item.last_seen_at),
-                ),
-                gauge,
-            )
+            let mut selection_text = format!(
+                "Title\n{}\n\nEpisode\n{}\n\nAni ID\n{}\n\nLast Seen\n{}",
+                truncate(&title, 40),
+                episode_progress_text,
+                truncate(&item.ani_id, 28),
+                format_last_seen_display(&item.last_seen_at),
+            );
+            if episode_state.is_some_and(EpisodeListState::is_loading) {
+                selection_text.push_str("\n\nEpisodes\nLoading...");
+            }
+            (selection_text, gauge)
         }
         None => (
             "No tracked entries yet.\n\nPress s to run ani-cli search and add entries.".to_string(),
@@ -748,7 +779,8 @@ fn parse_title_and_total_eps(title: &str) -> (String, Option<u32>) {
 fn ensure_selected_episode_list(
     items: &[crate::db::SeenEntry],
     table_state: &TableState,
-    episode_lists_by_id: &mut HashMap<String, Option<Vec<String>>>,
+    episode_lists_by_id: &mut HashMap<String, EpisodeListState>,
+    tx: &mpsc::Sender<EpisodeListFetchResult>,
 ) {
     let Some(selected_idx) = table_state.selected() else {
         return;
@@ -760,9 +792,26 @@ fn ensure_selected_episode_list(
         return;
     }
 
+    episode_lists_by_id.insert(item.ani_id.clone(), EpisodeListState::Loading);
+    let ani_id = item.ani_id.clone();
     let total_hint = parse_title_and_total_eps(&item.title).1;
-    let fetched = fetch_episode_labels(&item.ani_id, total_hint);
-    episode_lists_by_id.insert(item.ani_id.clone(), fetched);
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        let episode_list = fetch_episode_labels(&ani_id, total_hint);
+        let _ = tx.send(EpisodeListFetchResult {
+            ani_id,
+            episode_list,
+        });
+    });
+}
+
+fn drain_episode_fetch_results(
+    rx: &mpsc::Receiver<EpisodeListFetchResult>,
+    episode_lists_by_id: &mut HashMap<String, EpisodeListState>,
+) {
+    while let Ok(result) = rx.try_recv() {
+        episode_lists_by_id.insert(result.ani_id, EpisodeListState::Ready(result.episode_list));
+    }
 }
 
 struct TuiSession {
@@ -1316,15 +1365,24 @@ fn parse_journal_ani_cli_line(line: &str) -> Option<(u128, String)> {
 
 fn ani_cli_log_key(title: &str, episode: &str) -> String {
     let title_prefix = title.split('(').next().unwrap_or(title);
-    let normalized_title = title_prefix
-        .chars()
+    let mut key_raw = String::new();
+    key_raw.push_str(title_prefix);
+    key_raw.push(' ');
+    key_raw.push_str(episode.trim());
+    normalize_log_key(&key_raw)
+}
+
+fn normalize_log_key(raw: &str) -> String {
+    raw.chars()
         .filter(|ch| !ch.is_ascii_punctuation())
-        .collect::<String>();
-    format!("{normalized_title}{episode}")
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn detect_log_matched_entry(message: &str, after_ordered: &[HistEntry]) -> Option<HistEntry> {
-    let target = message.trim();
+    let target = normalize_log_key(message);
     for entry in after_ordered.iter().rev() {
         if ani_cli_log_key(&entry.title, &entry.ep) == target {
             return Some(entry.clone());
@@ -1449,7 +1507,11 @@ fn fetch_episode_labels(ani_id: &str, total_hint: Option<u32>) -> Option<Vec<Str
     let output = ProcessCommand::new("curl")
         .arg("-e")
         .arg("https://allanime.to")
-        .arg("-s")
+        .arg("-sS")
+        .arg("--connect-timeout")
+        .arg("3")
+        .arg("--max-time")
+        .arg("5")
         .arg("-G")
         .arg("https://api.allanime.day/api")
         .arg("--data-urlencode")
@@ -1833,6 +1895,12 @@ mod tests {
     fn ani_cli_log_key_matches_ani_cli_logger_format() {
         let key = ani_cli_log_key("Death Note: Rewrite (1 episodes)", "1");
         assert_eq!(key, "Death Note Rewrite 1");
+    }
+
+    #[test]
+    fn ani_cli_log_key_normalizes_missing_space_before_parentheses() {
+        let key = ani_cli_log_key("Naruto(220 episodes)", "1");
+        assert_eq!(key, "Naruto 1");
     }
 
     #[test]
