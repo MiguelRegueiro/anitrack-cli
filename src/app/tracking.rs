@@ -386,6 +386,11 @@ pub(crate) fn run_ani_cli_select(item: &SeenEntry) -> Result<PlaybackOutcome> {
 }
 
 pub(crate) fn resolve_select_nth_for_item(item: &SeenEntry) -> Option<u32> {
+    #[cfg(test)]
+    if let Some(override_index) = resolve_select_nth_test_override() {
+        return Some(override_index);
+    }
+
     let cleaned_title = sanitize_title_for_search(&item.title);
     let raw_title = item.title.trim().to_string();
     let queries = if cleaned_title == raw_title {
@@ -412,6 +417,13 @@ pub(crate) fn resolve_select_nth_for_item(item: &SeenEntry) -> Option<u32> {
         }
     }
     None
+}
+
+#[cfg(test)]
+fn resolve_select_nth_test_override() -> Option<u32> {
+    let raw = env::var("ANI_TRACK_TEST_SELECT_NTH").ok()?;
+    let parsed = raw.trim().parse::<u32>().ok()?;
+    (parsed > 0).then_some(parsed)
 }
 
 pub(crate) fn fetch_search_result_entries(
@@ -552,14 +564,16 @@ pub(crate) fn run_ani_cli_replay(
     item: &SeenEntry,
     episode_list: Option<&[String]>,
 ) -> Result<PlaybackOutcome> {
-    let fetched_episodes;
-    let resolved_episode_list = if episode_list.is_some() {
-        episode_list
-    } else {
+    // Avoid external metadata fetches when numeric fallback already determines replay plan.
+    let should_fetch_episodes =
+        episode_list.is_none() && replay_seed_episode(&item.last_episode, None).is_none();
+    let fetched_episodes = if should_fetch_episodes {
         let total_hint = parse_title_and_total_eps(&item.title).1;
-        fetched_episodes = fetch_episode_labels(&item.ani_id, total_hint);
-        fetched_episodes.as_deref()
+        fetch_episode_labels(&item.ani_id, total_hint)
+    } else {
+        None
     };
+    let resolved_episode_list = episode_list.or(fetched_episodes.as_deref());
 
     let plan = build_replay_plan(item, resolved_episode_list, resolve_select_nth_for_item);
     match plan {
