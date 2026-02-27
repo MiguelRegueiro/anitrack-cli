@@ -286,7 +286,22 @@ pub(crate) fn run_tui(db: &Database) -> Result<()> {
                 match result {
                     Ok(msg) => status = status_info(&msg),
                     Err(err) => {
-                        status = status_error(&format!("Action failed for {selected_title}: {err}"))
+                        let no_previous = matches!(action, TuiAction::Previous)
+                            && err.chain().any(|cause| {
+                                cause.to_string().contains("no previous episode available")
+                            });
+                        if no_previous {
+                            pending_notice = Some(PendingNotice {
+                                message: format!(
+                                    "No previous episode available.\n\n{}\n\nPress any key to continue.",
+                                    truncate(&selected_title, 50)
+                                ),
+                            });
+                            status = status_info("No previous episode available.");
+                        } else {
+                            status =
+                                status_error(&format!("Action failed for {selected_title}: {err}"));
+                        }
                     }
                 }
 
