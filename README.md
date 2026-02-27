@@ -1,5 +1,9 @@
 # anitrack
 
+[![CI](https://img.shields.io/github/actions/workflow/status/MiguelRegueiro/anitrack-cli/ci.yml?branch=main&label=CI)](https://github.com/MiguelRegueiro/anitrack-cli/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/anitrack.svg)](https://docs.rs/crate/anitrack/latest)
+[![AUR anitrack-bin](https://img.shields.io/aur/version/anitrack-bin?label=AUR%20anitrack-bin)](https://aur.archlinux.org/packages/anitrack-bin)
+
 AniTrack is a companion CLI for `ani-cli`. It adds watch-progress tracking and navigation while delegating search and playback to `ani-cli`.
 
 ## Screenshot
