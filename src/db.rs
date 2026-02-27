@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -25,6 +26,9 @@ impl Database {
         }
         let conn = Connection::open(path)
             .with_context(|| format!("failed to open database at {}", path.display()))?;
+        conn.busy_timeout(Duration::from_secs(5))
+            .context("failed to configure sqlite busy timeout")?;
+        let _ = conn.pragma_update(None, "journal_mode", "WAL");
         Ok(Self { conn })
     }
 
