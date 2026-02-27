@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added support for overriding the `ani-cli` binary path via `ANI_TRACK_ANI_CLI_BIN` (useful for integration testing and custom installs).
 - Added an initial integration test harness with fake `ani-cli` subprocess coverage for `start`, `next`, `replay`, `previous`, and `select` success/failure/no-op flows.
 - Added a dedicated Linux CI integration job (`cargo test --locked integration_`) for harness scenarios.
+- Added a dedicated macOS CI integration job (`cargo test --locked integration_`) for harness scenarios.
 
 ### Changed
 - Upgraded terminal UI stack to `ratatui 0.30.0` and aligned `crossterm` usage to the current backend path.
