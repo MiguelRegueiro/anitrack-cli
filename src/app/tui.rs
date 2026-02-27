@@ -23,8 +23,8 @@ use crate::db::{Database, SeenEntry};
 
 use super::episode::{
     build_progress_gauge, fetch_episode_labels, format_episode_progress_text,
-    format_last_seen_display, has_next_episode, has_previous_episode, parse_title_and_total_eps,
-    truncate,
+    format_last_seen_display_tui, has_next_episode, has_previous_episode,
+    parse_title_and_total_eps, truncate,
 };
 use super::tracking::{
     run_ani_cli_continue, run_ani_cli_previous, run_ani_cli_replay, run_ani_cli_search,
@@ -392,7 +392,7 @@ fn draw_tui(
                         .unwrap_or_else(|| "-".to_string()),
                 ),
                 Cell::from(item.last_episode.clone()),
-                Cell::from(format_last_seen_display(&item.last_seen_at)),
+                Cell::from(format_last_seen_display_tui(&item.last_seen_at)),
             ])
         })
         .collect();
@@ -441,7 +441,7 @@ fn draw_tui(
                 truncate(&title, 40),
                 episode_progress_text,
                 truncate(&item.ani_id, 28),
-                format_last_seen_display(&item.last_seen_at),
+                format_last_seen_display_tui(&item.last_seen_at),
             );
             if episode_state.is_some_and(EpisodeListState::is_loading) {
                 selection_text.push_str("\n\nEpisodes\nLoading...");

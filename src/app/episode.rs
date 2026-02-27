@@ -330,11 +330,15 @@ pub(crate) fn parse_episode_u32(ep: &str) -> Option<u32> {
 }
 
 pub(crate) fn format_last_seen_display(raw: &str) -> String {
+    format_last_seen_display_with_pattern(raw, "%Y-%m-%d %H:%M %:z")
+}
+
+pub(crate) fn format_last_seen_display_tui(raw: &str) -> String {
+    format_last_seen_display_with_pattern(raw, "%Y-%m-%d %H:%M")
+}
+
+fn format_last_seen_display_with_pattern(raw: &str, pattern: &str) -> String {
     DateTime::parse_from_rfc3339(raw)
-        .map(|dt| {
-            dt.with_timezone(&Local)
-                .format("%Y-%m-%d %H:%M %:z")
-                .to_string()
-        })
+        .map(|dt| dt.with_timezone(&Local).format(pattern).to_string())
         .unwrap_or_else(|_| raw.to_string())
 }
