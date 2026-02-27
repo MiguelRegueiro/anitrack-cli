@@ -127,6 +127,9 @@ cargo run -- tui
 - `ani-cli` history path read by AniTrack:
   - `$ANI_CLI_HIST_DIR/ani-hsts` if `ANI_CLI_HIST_DIR` is set
   - otherwise `${XDG_STATE_HOME:-$HOME/.local/state}/ani-cli/ani-hsts`
+- `ani-cli` binary path used by AniTrack:
+  - `$ANI_TRACK_ANI_CLI_BIN` if set
+  - otherwise `ani-cli` from your `PATH`
 
 History line format expected by AniTrack:
 `episode<TAB>id<TAB>title`
@@ -136,11 +139,13 @@ AniTrack also accepts space-separated history lines when tabs are not present:
 
 ## Behavior Notes
 - If the database or parent directory does not exist, AniTrack creates them automatically.
+- AniTrack sets a short SQLite busy timeout and attempts WAL mode when opening the DB to improve resilience under brief lock contention.
 - If `anitrack next` or `anitrack replay` playback fails or is interrupted, progress is not updated.
 - If you navigate episodes inside `ani-cli` after playback starts (for example using its `next` option), AniTrack stores the last episode reached when the session ends successfully.
 - If no prior entry exists, `next` and `replay` instruct you to run `anitrack start` first.
 - TUI/start sync only records entries tied to the current run and does not backfill arbitrary old history rows, so deleted DB entries are not resurrected unless watched again.
 - The `journalctl` log-fallback path is Linux-only; on non-Linux systems AniTrack skips that fallback and relies on history-based detection.
+- Metadata/search API calls use short retries for transient network failures.
 
 ## License
 This project is licensed under the GNU General Public License v3.0 or later (`GPL-3.0-or-later`).
