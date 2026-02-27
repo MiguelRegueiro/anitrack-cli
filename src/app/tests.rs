@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::{Mutex, OnceLock};
 
+use chrono::{DateTime, Local};
+
 #[cfg(unix)]
 use crate::db::Database;
 
@@ -544,14 +546,38 @@ fn has_next_episode_falls_back_to_numeric_when_list_missing() {
 
 #[test]
 fn format_last_seen_display_parses_rfc3339_timestamp() {
-    let formatted = format_last_seen_display("2026-02-25T18:27:06.100701256+00:00");
-    assert_eq!(formatted, "2026-02-25 18:27");
+    let raw = "2026-02-25T18:27:06.100701256+00:00";
+    let formatted = format_last_seen_display(raw);
+    let expected = DateTime::parse_from_rfc3339(raw)
+        .expect("timestamp should parse")
+        .with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M %:z")
+        .to_string();
+    assert_eq!(formatted, expected);
+}
+
+#[test]
+fn format_last_seen_display_tui_parses_rfc3339_timestamp_without_offset() {
+    let raw = "2026-02-25T18:27:06.100701256+00:00";
+    let formatted = format_last_seen_display_tui(raw);
+    let expected = DateTime::parse_from_rfc3339(raw)
+        .expect("timestamp should parse")
+        .with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M")
+        .to_string();
+    assert_eq!(formatted, expected);
 }
 
 #[test]
 fn format_last_seen_display_keeps_raw_when_invalid() {
     let raw = "not-a-timestamp";
     assert_eq!(format_last_seen_display(raw), raw);
+}
+
+#[test]
+fn format_last_seen_display_tui_keeps_raw_when_invalid() {
+    let raw = "not-a-timestamp";
+    assert_eq!(format_last_seen_display_tui(raw), raw);
 }
 
 #[test]
