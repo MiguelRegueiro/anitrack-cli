@@ -103,7 +103,7 @@ fn run_replay(db: &Database) -> Result<()> {
             println!("  Title: {}", item.title);
             println!("  Episode: {}", item.last_episode);
 
-            let outcome = run_ani_cli_replay(&item);
+            let outcome = run_ani_cli_replay(&item, None);
             let outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(err) => {
@@ -153,10 +153,41 @@ fn run_list(db: &Database) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TuiAction {
     Next,
     Replay,
+    Previous,
+    Select,
+}
+
+impl TuiAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Next => "NEXT",
+            Self::Replay => "REPLAY",
+            Self::Previous => "PREVIOUS",
+            Self::Select => "SELECT",
+        }
+    }
+
+    fn move_left(self) -> Self {
+        match self {
+            Self::Next => Self::Next,
+            Self::Replay => Self::Next,
+            Self::Previous => Self::Replay,
+            Self::Select => Self::Previous,
+        }
+    }
+
+    fn move_right(self) -> Self {
+        match self {
+            Self::Next => Self::Replay,
+            Self::Replay => Self::Previous,
+            Self::Previous => Self::Select,
+            Self::Select => Self::Select,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -309,8 +340,8 @@ fn run_tui(db: &Database) -> Result<()> {
                     table_state.select(Some(next));
                 }
             }
-            KeyCode::Left => action = TuiAction::Next,
-            KeyCode::Right => action = TuiAction::Replay,
+            KeyCode::Left => action = action.move_left(),
+            KeyCode::Right => action = action.move_right(),
             KeyCode::Char('d') => {
                 let Some(selected) = table_state.selected() else {
                     status = status_error("Delete failed: no entry selected.");
@@ -335,12 +366,12 @@ fn run_tui(db: &Database) -> Result<()> {
                     continue;
                 }
                 let selected_item = &items[selected];
+                let episode_list = episode_lists_by_id
+                    .get(&selected_item.ani_id)
+                    .and_then(EpisodeListState::episode_list);
 
                 if matches!(action, TuiAction::Next) {
                     let total_eps = parse_title_and_total_eps(&selected_item.title).1;
-                    let episode_list = episode_lists_by_id
-                        .get(&selected_item.ani_id)
-                        .and_then(EpisodeListState::episode_list);
                     if !has_next_episode(&selected_item.last_episode, total_eps, episode_list) {
                         pending_notice = Some(PendingNotice {
                             message: format!(
@@ -353,11 +384,24 @@ fn run_tui(db: &Database) -> Result<()> {
                     }
                 }
 
+                if matches!(action, TuiAction::Previous)
+                    && !has_previous_episode(&selected_item.last_episode, episode_list)
+                {
+                    pending_notice = Some(PendingNotice {
+                        message: format!(
+                            "No previous episode available.\n\n{}\n\nPress any key to continue.",
+                            truncate(&selected_item.title, 50)
+                        ),
+                    });
+                    status = status_info("No previous episode available.");
+                    continue;
+                }
+
                 let selected_id = items[selected].ani_id.clone();
                 let selected_title = items[selected].title.clone();
 
                 session.suspend()?;
-                let result = run_selected_action(db, &items[selected], action);
+                let result = run_selected_action(db, &items[selected], action, episode_list);
                 session.resume()?;
                 terminal.clear()?;
 
@@ -409,10 +453,7 @@ fn draw_tui(
     } else {
         selected_idx.to_string()
     };
-    let mode_text = match action {
-        TuiAction::Next => "NEXT",
-        TuiAction::Replay => "REPLAY",
-    };
+    let mode_text = action.label();
     let header = Paragraph::new(Line::from(vec![
         Span::styled(
             "ANITRACK",
@@ -538,26 +579,7 @@ fn draw_tui(
         frame.render_widget(progress, details_chunks[1]);
     }
 
-    let action_line = match action {
-        TuiAction::Next => Line::from(vec![
-            Span::styled(" NEXT ", pill_active()),
-            Span::styled(" ", Style::default()),
-            Span::styled(" REPLAY ", pill_inactive()),
-            Span::styled(
-                "   ↑/↓ move  ←/→ mode  Enter run  s search  d delete  q quit",
-                Style::default().fg(Color::Rgb(185, 195, 210)),
-            ),
-        ]),
-        TuiAction::Replay => Line::from(vec![
-            Span::styled(" NEXT ", pill_inactive()),
-            Span::styled(" ", Style::default()),
-            Span::styled(" REPLAY ", pill_active()),
-            Span::styled(
-                "   ↑/↓ move  ←/→ mode  Enter run  s search  d delete  q quit",
-                Style::default().fg(Color::Rgb(185, 195, 210)),
-            ),
-        ]),
-    };
+    let action_line = action_selector_line(action);
     let command_bar = Paragraph::new(action_line)
         .alignment(Alignment::Center)
         .block(panel_block("Controls"));
@@ -625,6 +647,33 @@ fn pill_inactive() -> Style {
     Style::default()
         .bg(Color::Rgb(72, 82, 96))
         .fg(Color::Rgb(230, 235, 242))
+}
+
+fn action_pill_style(action: TuiAction, current: TuiAction) -> Style {
+    if action == current {
+        pill_active()
+    } else {
+        pill_inactive()
+    }
+}
+
+fn action_selector_line(current: TuiAction) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(" NEXT ", action_pill_style(TuiAction::Next, current)),
+        Span::styled(" ", Style::default()),
+        Span::styled(" REPLAY ", action_pill_style(TuiAction::Replay, current)),
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            " PREVIOUS ",
+            action_pill_style(TuiAction::Previous, current),
+        ),
+        Span::styled(" ", Style::default()),
+        Span::styled(" SELECT ", action_pill_style(TuiAction::Select, current)),
+        Span::styled(
+            "   ↑/↓ move  ←/→ action  Enter run  s search  d delete  q quit",
+            Style::default().fg(Color::Rgb(185, 195, 210)),
+        ),
+    ])
 }
 
 fn status_style(status: &str) -> Style {
@@ -723,6 +772,7 @@ fn run_selected_action(
     db: &Database,
     item: &crate::db::SeenEntry,
     action: TuiAction,
+    episode_list: Option<&[String]>,
 ) -> Result<String> {
     match action {
         TuiAction::Next => {
@@ -741,7 +791,7 @@ fn run_selected_action(
             }
         }
         TuiAction::Replay => {
-            let outcome = run_ani_cli_replay(item)?;
+            let outcome = run_ani_cli_replay(item, episode_list)?;
             if outcome.success {
                 let updated_ep = outcome
                     .final_episode
@@ -749,6 +799,36 @@ fn run_selected_action(
                 db.upsert_seen(&item.ani_id, &item.title, &updated_ep)?;
                 Ok(format!(
                     "Replay finished: {} now on episode {}",
+                    item.title, updated_ep
+                ))
+            } else {
+                Ok("Playback failed/interrupted. Progress not updated.".to_string())
+            }
+        }
+        TuiAction::Previous => {
+            let outcome = run_ani_cli_previous(item, episode_list)?;
+            if outcome.success {
+                let updated_ep = outcome
+                    .final_episode
+                    .unwrap_or_else(|| item.last_episode.clone());
+                db.upsert_seen(&item.ani_id, &item.title, &updated_ep)?;
+                Ok(format!(
+                    "Previous finished: {} now on episode {}",
+                    item.title, updated_ep
+                ))
+            } else {
+                Ok("Playback failed/interrupted. Progress not updated.".to_string())
+            }
+        }
+        TuiAction::Select => {
+            let outcome = run_ani_cli_select(item)?;
+            if outcome.success {
+                let updated_ep = outcome
+                    .final_episode
+                    .unwrap_or_else(|| item.last_episode.clone());
+                db.upsert_seen(&item.ani_id, &item.title, &updated_ep)?;
+                Ok(format!(
+                    "Select finished: {} now on episode {}",
                     item.title, updated_ep
                 ))
             } else {
@@ -1058,9 +1138,13 @@ fn run_ani_cli_continue(
     })
 }
 
-fn run_ani_cli_episode(title: &str, episode: &str) -> Result<bool> {
+fn run_ani_cli_episode(title: &str, select_nth: Option<u32>, episode: &str) -> Result<bool> {
     let ani_cli_bin = resolve_ani_cli_bin();
-    let status = ProcessCommand::new(&ani_cli_bin)
+    let mut cmd = ProcessCommand::new(&ani_cli_bin);
+    if let Some(index) = select_nth {
+        cmd.arg("-S").arg(index.to_string());
+    }
+    let status = cmd
         .arg(title)
         .arg("-e")
         .arg(episode)
@@ -1072,9 +1156,26 @@ fn run_ani_cli_episode(title: &str, episode: &str) -> Result<bool> {
     Ok(status.success())
 }
 
+fn run_ani_cli_title(title: &str, select_nth: Option<u32>) -> Result<bool> {
+    let ani_cli_bin = resolve_ani_cli_bin();
+    let mut cmd = ProcessCommand::new(&ani_cli_bin);
+    if let Some(index) = select_nth {
+        cmd.arg("-S").arg(index.to_string());
+    }
+    let status = cmd
+        .arg(title)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| format!("failed to launch {}", ani_cli_bin.display()))?;
+    Ok(status.success())
+}
+
 fn run_ani_cli_episode_with_global_tracking(
     item: &crate::db::SeenEntry,
     episode: &str,
+    select_nth: Option<u32>,
 ) -> Result<PlaybackOutcome> {
     let histfile = ani_cli_histfile();
     let before_read = read_hist_map(&histfile);
@@ -1082,7 +1183,8 @@ fn run_ani_cli_episode_with_global_tracking(
         eprintln!("Warning: {warning}");
     }
     let before = before_read.entries;
-    let success = run_ani_cli_episode(&sanitize_title_for_search(&item.title), episode)?;
+    let success =
+        run_ani_cli_episode(&sanitize_title_for_search(&item.title), select_nth, episode)?;
     let final_episode = if success {
         let after_read = read_hist_map(&histfile);
         for warning in after_read.warnings {
@@ -1103,11 +1205,250 @@ fn run_ani_cli_episode_with_global_tracking(
     })
 }
 
-fn run_ani_cli_replay(item: &crate::db::SeenEntry) -> Result<PlaybackOutcome> {
-    if let Some(seed_episode) = resolve_replay_seed_episode(item) {
+fn run_ani_cli_select(item: &crate::db::SeenEntry) -> Result<PlaybackOutcome> {
+    let histfile = ani_cli_histfile();
+    let before_read = read_hist_map(&histfile);
+    for warning in before_read.warnings {
+        eprintln!("Warning: {warning}");
+    }
+    let before = before_read.entries;
+    let select_nth = resolve_select_nth_for_item(item)
+        .ok_or_else(|| anyhow!("failed to resolve current show for episode selection"))?;
+    let success = run_ani_cli_title(&sanitize_title_for_search(&item.title), Some(select_nth))?;
+    let final_episode = if success {
+        let after_read = read_hist_map(&histfile);
+        for warning in after_read.warnings {
+            eprintln!("Warning: {warning}");
+        }
+        after_read
+            .entries
+            .get(&item.ani_id)
+            .or_else(|| before.get(&item.ani_id))
+            .map(|entry| entry.ep.clone())
+    } else {
+        None
+    };
+
+    Ok(PlaybackOutcome {
+        success,
+        final_episode,
+    })
+}
+
+fn resolve_select_nth_for_item(item: &crate::db::SeenEntry) -> Option<u32> {
+    let cleaned_title = sanitize_title_for_search(&item.title);
+    let raw_title = item.title.trim().to_string();
+    let queries = if cleaned_title == raw_title {
+        vec![cleaned_title]
+    } else {
+        vec![cleaned_title, raw_title]
+    };
+
+    let env_mode = env::var("ANI_CLI_MODE").unwrap_or_else(|_| "sub".to_string());
+    let mut modes = vec![env_mode, "sub".to_string(), "dub".to_string()];
+    modes.dedup();
+
+    for query in queries {
+        for mode in &modes {
+            let Some(entries) = fetch_search_result_entries(&query, mode) else {
+                continue;
+            };
+            if let Some(index) = find_select_nth_index_by_id(&entries, &item.ani_id) {
+                return Some(index);
+            }
+            if let Some(index) = find_select_nth_index_by_title(&entries, &item.title) {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+fn fetch_search_result_entries(query: &str, mode: &str) -> Option<Vec<SearchResultEntry>> {
+    let gql = "query( $search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType ) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } }}";
+    let escaped_query = json_escape(query);
+    let escaped_mode = json_escape(mode);
+    let variables = format!(
+        "{{\"search\":{{\"allowAdult\":false,\"allowUnknown\":false,\"query\":\"{escaped_query}\"}},\"limit\":40,\"page\":1,\"translationType\":\"{escaped_mode}\",\"countryOrigin\":\"ALL\"}}"
+    );
+    let output = ProcessCommand::new("curl")
+        .arg("-e")
+        .arg("https://allmanga.to")
+        .arg("-sS")
+        .arg("--connect-timeout")
+        .arg("3")
+        .arg("--max-time")
+        .arg("6")
+        .arg("-G")
+        .arg("https://api.allanime.day/api")
+        .arg("--data-urlencode")
+        .arg(format!("variables={variables}"))
+        .arg("--data-urlencode")
+        .arg(format!("query={gql}"))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let raw = String::from_utf8(output.stdout).ok()?;
+    let entries = parse_search_result_entries(&raw);
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SearchResultEntry {
+    id: String,
+    title: String,
+}
+
+fn parse_search_result_entries(raw: &str) -> Vec<SearchResultEntry> {
+    let mut entries = Vec::new();
+    let marker = "\"_id\":\"";
+    let mut cursor = 0usize;
+
+    while let Some(rel_start) = raw[cursor..].find(marker) {
+        let id_start = cursor + rel_start + marker.len();
+        let Some((id, id_end)) = parse_json_string(raw, id_start) else {
+            break;
+        };
+        let Some(rel_name_marker) = raw[id_end..].find("\"name\":\"") else {
+            cursor = id_end;
+            continue;
+        };
+        let name_start = id_end + rel_name_marker + "\"name\":\"".len();
+        let Some((title, title_end)) = parse_json_string(raw, name_start) else {
+            break;
+        };
+        entries.push(SearchResultEntry { id, title });
+        cursor = title_end;
+    }
+
+    entries
+}
+
+fn parse_json_string(raw: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = raw.as_bytes();
+    let mut i = start;
+    let mut out = String::new();
+    let mut escaped = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if escaped {
+            out.push(match b {
+                b'"' => '"',
+                b'\\' => '\\',
+                b'n' => '\n',
+                b'r' => '\r',
+                b't' => '\t',
+                _ => b as char,
+            });
+            escaped = false;
+            i += 1;
+            continue;
+        }
+
+        if b == b'\\' {
+            escaped = true;
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            return Some((out, i + 1));
+        }
+        out.push(b as char);
+        i += 1;
+    }
+    None
+}
+
+fn find_select_nth_index_by_id(entries: &[SearchResultEntry], ani_id: &str) -> Option<u32> {
+    entries
+        .iter()
+        .position(|entry| entry.id == ani_id)
+        .map(|idx| (idx + 1) as u32)
+}
+
+fn find_select_nth_index_by_title(entries: &[SearchResultEntry], title: &str) -> Option<u32> {
+    let target = normalize_title_for_match(title);
+    entries
+        .iter()
+        .position(|entry| normalize_title_for_match(&entry.title) == target)
+        .map(|idx| (idx + 1) as u32)
+}
+
+fn normalize_title_for_match(raw: &str) -> String {
+    let base = parse_title_and_total_eps(raw).0;
+    base.to_lowercase()
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch.is_whitespace() {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn json_escape(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                let code = c as u32;
+                out.push_str(&format!("\\u{code:04x}"));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn run_ani_cli_replay(
+    item: &crate::db::SeenEntry,
+    episode_list: Option<&[String]>,
+) -> Result<PlaybackOutcome> {
+    if let Some(seed_episode) = resolve_replay_seed_episode(item, episode_list) {
         run_ani_cli_continue(item, &seed_episode)
     } else {
-        run_ani_cli_episode_with_global_tracking(item, &item.last_episode)
+        run_ani_cli_episode_with_global_tracking(item, &item.last_episode, None)
+    }
+}
+
+fn run_ani_cli_previous(
+    item: &crate::db::SeenEntry,
+    episode_list: Option<&[String]>,
+) -> Result<PlaybackOutcome> {
+    let fetched_episodes;
+    let resolved_episode_list = if episode_list.is_some() {
+        episode_list
+    } else {
+        let total_hint = parse_title_and_total_eps(&item.title).1;
+        fetched_episodes = fetch_episode_labels(&item.ani_id, total_hint);
+        fetched_episodes.as_deref()
+    };
+
+    let target_episode = resolve_previous_target_episode(&item.last_episode, resolved_episode_list)
+        .ok_or_else(|| anyhow!("no previous episode available"))?;
+    if let Some(seed_episode) = previous_seed_episode(&item.last_episode, resolved_episode_list) {
+        run_ani_cli_continue(item, &seed_episode)
+    } else {
+        let select_nth = resolve_select_nth_for_item(item)
+            .ok_or_else(|| anyhow!("failed to resolve current show for previous action"))?;
+        run_ani_cli_episode_with_global_tracking(item, &target_episode, Some(select_nth))
     }
 }
 
@@ -1557,10 +1898,68 @@ fn replay_seed_episode(last_episode: &str, episode_list: Option<&[String]>) -> O
     }
 }
 
-fn resolve_replay_seed_episode(item: &crate::db::SeenEntry) -> Option<String> {
+fn previous_target_episode(last_episode: &str, episode_list: Option<&[String]>) -> Option<String> {
+    if let Some(episodes) = episode_list
+        && let Some(idx) = episodes
+            .iter()
+            .position(|episode| episode_labels_match(episode, last_episode))
+    {
+        if idx > 0 {
+            return episodes.get(idx - 1).cloned();
+        }
+        return None;
+    }
+
+    let current = parse_episode_f64(last_episode)?;
+    if current <= 0.0 {
+        return None;
+    }
+
+    if is_effective_integer(current) {
+        return integer_episode_label(current - 1.0);
+    }
+
+    integer_episode_label(current.floor())
+}
+
+fn previous_seed_episode(last_episode: &str, episode_list: Option<&[String]>) -> Option<String> {
+    if let Some(episodes) = episode_list
+        && let Some(idx) = episodes
+            .iter()
+            .position(|episode| episode_labels_match(episode, last_episode))
+    {
+        if idx > 1 {
+            return episodes.get(idx - 2).cloned();
+        }
+        return None;
+    }
+
+    let target = previous_target_episode(last_episode, None)?;
+    let target_value = parse_episode_f64(&target)?;
+    if target_value > 1.0 {
+        integer_episode_label(target_value - 1.0)
+    } else {
+        None
+    }
+}
+
+fn resolve_replay_seed_episode(
+    item: &crate::db::SeenEntry,
+    episode_list: Option<&[String]>,
+) -> Option<String> {
+    if episode_list.is_some() {
+        return replay_seed_episode(&item.last_episode, episode_list);
+    }
     let total_hint = parse_title_and_total_eps(&item.title).1;
     let episodes = fetch_episode_labels(&item.ani_id, total_hint);
     replay_seed_episode(&item.last_episode, episodes.as_deref())
+}
+
+fn resolve_previous_target_episode(
+    last_episode: &str,
+    episode_list: Option<&[String]>,
+) -> Option<String> {
+    previous_target_episode(last_episode, episode_list)
 }
 
 fn has_next_episode(
@@ -1581,6 +1980,25 @@ fn has_next_episode(
     }
 
     true
+}
+
+fn has_previous_episode(last_episode: &str, episode_list: Option<&[String]>) -> bool {
+    previous_target_episode(last_episode, episode_list).is_some()
+}
+
+fn integer_episode_label(value: f64) -> Option<String> {
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    let rounded = value.round();
+    if !is_effective_integer(rounded) {
+        return None;
+    }
+    Some(format!("{}", rounded as i64))
+}
+
+fn is_effective_integer(value: f64) -> bool {
+    (value - value.round()).abs() < 0.000_001
 }
 
 fn episode_ordinal_from_list(last_episode: &str, episodes: &[String]) -> Option<u32> {
@@ -2014,6 +2432,120 @@ mod tests {
 
         let seed_first = replay_seed_episode("1", None);
         assert!(seed_first.is_none());
+    }
+
+    #[test]
+    fn previous_target_episode_uses_episode_list_for_non_linear_numbering() {
+        let episodes = vec![
+            "0".to_string(),
+            "1".to_string(),
+            "2".to_string(),
+            "13".to_string(),
+            "13.5".to_string(),
+        ];
+        let previous = previous_target_episode("13.5", Some(&episodes));
+        assert_eq!(previous.as_deref(), Some("13"));
+    }
+
+    #[test]
+    fn previous_seed_episode_steps_back_two_positions_when_possible() {
+        let episodes = vec![
+            "0".to_string(),
+            "1".to_string(),
+            "2".to_string(),
+            "13".to_string(),
+            "13.5".to_string(),
+        ];
+        let seed = previous_seed_episode("13.5", Some(&episodes));
+        assert_eq!(seed.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn previous_episode_helpers_fall_back_to_numeric() {
+        assert_eq!(previous_target_episode("5", None).as_deref(), Some("4"));
+        assert_eq!(previous_seed_episode("5", None).as_deref(), Some("3"));
+        assert_eq!(previous_target_episode("1", None).as_deref(), Some("0"));
+        assert_eq!(previous_target_episode("0", None).as_deref(), None);
+        assert_eq!(previous_seed_episode("2", None).as_deref(), None);
+    }
+
+    #[test]
+    fn has_previous_episode_handles_decimal_and_zero_when_list_missing() {
+        assert!(has_previous_episode("13.5", None));
+        assert!(has_previous_episode("1", None));
+        assert!(!has_previous_episode("0", None));
+    }
+
+    #[test]
+    fn parse_search_result_entries_extracts_ids_in_order() {
+        let raw =
+            r#"{"data":{"shows":{"edges":[{"_id":"id-1","name":"A"},{"_id":"id-2","name":"B"}]}}}"#;
+        let entries = parse_search_result_entries(raw);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, "id-1");
+        assert_eq!(entries[0].title, "A");
+        assert_eq!(entries[1].id, "id-2");
+        assert_eq!(entries[1].title, "B");
+    }
+
+    #[test]
+    fn find_select_nth_index_by_id_returns_one_based_position() {
+        let entries = vec![
+            SearchResultEntry {
+                id: "id-1".to_string(),
+                title: "A".to_string(),
+            },
+            SearchResultEntry {
+                id: "id-2".to_string(),
+                title: "B".to_string(),
+            },
+            SearchResultEntry {
+                id: "id-3".to_string(),
+                title: "C".to_string(),
+            },
+        ];
+        assert_eq!(find_select_nth_index_by_id(&entries, "id-2"), Some(2));
+        assert_eq!(find_select_nth_index_by_id(&entries, "id-missing"), None);
+    }
+
+    #[test]
+    fn find_select_nth_index_by_title_matches_normalized_title() {
+        let entries = vec![
+            SearchResultEntry {
+                id: "id-1".to_string(),
+                title: "Shingeki no Kyojin".to_string(),
+            },
+            SearchResultEntry {
+                id: "id-2".to_string(),
+                title: "Death Note".to_string(),
+            },
+        ];
+        assert_eq!(
+            find_select_nth_index_by_title(&entries, "Shingeki no Kyojin (27 episodes)"),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn json_escape_handles_quotes_backslashes_and_controls() {
+        let escaped = json_escape("A\"B\\C\n");
+        assert_eq!(escaped, "A\\\"B\\\\C\\n");
+    }
+
+    #[test]
+    fn previous_episode_helpers_support_decimal_fallback_without_list() {
+        assert_eq!(previous_target_episode("15.5", None).as_deref(), Some("15"));
+        assert_eq!(previous_seed_episode("15.5", None).as_deref(), Some("14"));
+    }
+
+    #[test]
+    fn tui_action_horizontal_navigation_respects_edges() {
+        assert_eq!(TuiAction::Next.move_left(), TuiAction::Next);
+        assert_eq!(TuiAction::Next.move_right(), TuiAction::Replay);
+        assert_eq!(TuiAction::Replay.move_right(), TuiAction::Previous);
+        assert_eq!(TuiAction::Previous.move_right(), TuiAction::Select);
+        assert_eq!(TuiAction::Select.move_right(), TuiAction::Select);
+        assert_eq!(TuiAction::Select.move_left(), TuiAction::Previous);
     }
 
     #[test]

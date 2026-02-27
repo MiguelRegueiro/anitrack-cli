@@ -93,11 +93,11 @@ anitrack list
 - `anitrack tui`
   - Opens an interactive terminal UI with tracked shows (latest first)
   - `Up/Down` selects show
-  - `Left/Right` selects action (`Next` / `Replay`, default `Next`)
+  - `Left/Right` selects action (`Next` / `Replay` / `Previous` / `Select`, default `Next`)
   - `s` launches search (runs `ani-cli` UI and returns to the TUI after exit)
   - Search sync uses the same detection rules as `start` (history delta first, then log fallback)
   - `d` deletes selected tracked entry (with confirmation prompt)
-  - `Enter` runs the selected action for the selected show
+  - `Enter` runs the selected action for the selected show (`Select` launches `ani-cli` episode selection flow)
   - `q` quits
 
 <details>
