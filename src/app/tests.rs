@@ -353,6 +353,44 @@ fn replay_seed_episode_falls_back_to_numeric_when_list_missing() {
 }
 
 #[test]
+fn replay_plan_uses_select_nth_for_episode_zero_fallback() {
+    let item = crate::db::SeenEntry {
+        ani_id: "show-0".to_string(),
+        title: "Replay Zero Show (2 episodes)".to_string(),
+        last_episode: "0".to_string(),
+        last_seen_at: "2026-02-27T00:00:00+00:00".to_string(),
+    };
+    let episodes = vec!["0".to_string(), "1".to_string(), "2".to_string()];
+
+    let plan = build_replay_plan(&item, Some(&episodes), |_| Some(4));
+    assert_eq!(
+        plan,
+        ReplayPlan::Episode {
+            episode: "0".to_string(),
+            select_nth: Some(4),
+        }
+    );
+}
+
+#[test]
+fn replay_plan_uses_continue_seed_when_available() {
+    let item = crate::db::SeenEntry {
+        ani_id: "show-5".to_string(),
+        title: "Replay Normal Show (12 episodes)".to_string(),
+        last_episode: "5".to_string(),
+        last_seen_at: "2026-02-27T00:00:00+00:00".to_string(),
+    };
+
+    let plan = build_replay_plan(&item, None, |_| Some(99));
+    assert_eq!(
+        plan,
+        ReplayPlan::Continue {
+            seed_episode: "4".to_string(),
+        }
+    );
+}
+
+#[test]
 fn previous_target_episode_uses_episode_list_for_non_linear_numbering() {
     let episodes = vec![
         "0".to_string(),

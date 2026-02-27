@@ -41,6 +41,28 @@ Before cutting a release:
 - `CHANGELOG.md` has a matching section for the target version.
 - crates.io trusted publisher setup is complete for this repository/environment.
 
+### Manual smoke test (required)
+
+Run these checks with real `ani-cli` behavior before creating the release tag:
+
+1. `anitrack start`
+   - watch/select a show in `ani-cli`
+   - confirm AniTrack records the watched entry (`anitrack list`)
+2. `anitrack next`
+   - confirm it continues the most recent show and updates progress on success
+3. `anitrack replay` (normal episode, e.g. `>= 1`)
+   - confirm replay works and does not open unexpected show-selection UI
+4. `anitrack replay` on episode `0`
+   - confirm replay targets the same tracked show and episode `0` (no wrong show-selection screen)
+5. `anitrack tui` -> `PREVIOUS` from `1`
+   - confirm it goes to `0`
+6. `anitrack tui` -> `PREVIOUS` from `0`
+   - confirm it shows the no-op notice (no crash and no unwanted search-selection flow)
+7. `anitrack tui` -> `SELECT`
+   - confirm it opens episode selection for the currently selected tracked show
+
+If any step fails, fix and rerun that step before tagging.
+
 ## Release steps
 
 1. Update `Cargo.toml` version.

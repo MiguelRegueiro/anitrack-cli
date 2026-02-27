@@ -35,6 +35,17 @@ pub(crate) struct PlaybackOutcome {
     pub(crate) final_episode: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReplayPlan {
+    Continue {
+        seed_episode: String,
+    },
+    Episode {
+        episode: String,
+        select_nth: Option<u32>,
+    },
+}
+
 #[cfg(unix)]
 pub(crate) fn with_sigint_ignored<F, R>(f: F) -> Result<R>
 where
@@ -525,10 +536,32 @@ pub(crate) fn run_ani_cli_replay(
         fetched_episodes.as_deref()
     };
 
-    if let Some(seed_episode) = replay_seed_episode(&item.last_episode, resolved_episode_list) {
-        run_ani_cli_continue(item, &seed_episode)
+    let plan = build_replay_plan(item, resolved_episode_list, resolve_select_nth_for_item);
+    match plan {
+        ReplayPlan::Continue { seed_episode } => run_ani_cli_continue(item, &seed_episode),
+        ReplayPlan::Episode {
+            episode,
+            select_nth,
+        } => run_ani_cli_episode_with_global_tracking(item, &episode, select_nth),
+    }
+}
+
+pub(crate) fn build_replay_plan<F>(
+    item: &SeenEntry,
+    episode_list: Option<&[String]>,
+    resolve_select_nth: F,
+) -> ReplayPlan
+where
+    F: FnOnce(&SeenEntry) -> Option<u32>,
+{
+    if let Some(seed_episode) = replay_seed_episode(&item.last_episode, episode_list) {
+        ReplayPlan::Continue { seed_episode }
     } else {
-        run_ani_cli_episode_with_global_tracking(item, &item.last_episode, None)
+        // Episode 0 / first-entry replay can otherwise open ambiguous show search in ani-cli.
+        ReplayPlan::Episode {
+            episode: item.last_episode.clone(),
+            select_nth: resolve_select_nth(item),
+        }
     }
 }
 
