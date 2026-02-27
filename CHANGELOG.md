@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added CI dependency-audit enforcement with `cargo audit --deny unsound`.
 - Added regression tests for temp history directory cleanup and parser edge cases (escaped titles and malformed payload handling).
 - Added support for overriding the `ani-cli` binary path via `ANI_TRACK_ANI_CLI_BIN` (useful for integration testing and custom installs).
-- Added an initial integration test harness with fake `ani-cli` subprocess coverage for `start` and `next` success/failure flows.
+- Added an initial integration test harness with fake `ani-cli` subprocess coverage for `start`, `next`, `replay`, and `select` success/failure flows.
 - Added a dedicated Linux CI integration job (`cargo test --locked integration_`) for harness scenarios.
 
 ### Changed
@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed Unix terminal/signal restoration edge cases by using scoped signal and foreground-terminal guards across interactive subprocess execution.
 - Improved JSON string unescaping behavior in search-result parsing (including escaped Unicode/control sequences) for more robust API response handling.
 - Improved SQLite runtime robustness by setting a connection `busy_timeout` and attempting WAL mode on database open.
+- Improved interactive subprocess handling in non-TTY contexts by falling back to plain process status execution when no controlling terminal is available.
 
 ## [0.1.5] - 2026-02-27
 
