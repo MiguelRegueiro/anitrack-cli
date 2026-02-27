@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added CI dependency-audit enforcement with `cargo audit --deny unsound`.
 - Added regression tests for temp history directory cleanup and parser edge cases (escaped titles and malformed payload handling).
 - Added support for overriding the `ani-cli` binary path via `ANI_TRACK_ANI_CLI_BIN` (useful for integration testing and custom installs).
+- Added an initial integration test harness with fake `ani-cli` subprocess coverage for `start` and `next` success/failure flows.
+- Added a dedicated Linux CI integration job (`cargo test --locked integration_`) for harness scenarios.
 
 ### Changed
 - Upgraded terminal UI stack to `ratatui 0.30.0` and aligned `crossterm` usage to the current backend path.

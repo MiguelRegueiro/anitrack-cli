@@ -91,16 +91,12 @@ struct TerminalForegroundGuard {
 
 #[cfg(unix)]
 impl TerminalForegroundGuard {
-    fn new(stdin_fd: libc::c_int) -> Result<Self> {
-        let parent_pgrp = unsafe { libc::tcgetpgrp(stdin_fd) };
-        if parent_pgrp == -1 {
-            return Err(anyhow!("failed to read terminal process group"));
-        }
-        Ok(Self {
+    fn new(stdin_fd: libc::c_int, parent_pgrp: libc::pid_t) -> Self {
+        Self {
             stdin_fd,
             parent_pgrp,
             child_foreground: false,
-        })
+        }
     }
 
     fn handoff_to_child(&mut self, child_pgrp: libc::pid_t) {
@@ -140,8 +136,13 @@ where
 #[cfg(unix)]
 pub(crate) fn run_interactive_cmd(mut cmd: ProcessCommand) -> Result<ExitStatus> {
     let stdin_fd = libc::STDIN_FILENO;
+    let parent_pgrp = unsafe { libc::tcgetpgrp(stdin_fd) };
+    if parent_pgrp == -1 {
+        return cmd.status().context("failed to launch ani-cli");
+    }
+
     let _sigttou_guard = ScopedSigaction::ignore(libc::SIGTTOU)?;
-    let mut terminal_guard = TerminalForegroundGuard::new(stdin_fd)?;
+    let mut terminal_guard = TerminalForegroundGuard::new(stdin_fd, parent_pgrp);
 
     unsafe {
         cmd.pre_exec(|| {
