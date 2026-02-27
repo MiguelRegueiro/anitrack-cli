@@ -845,6 +845,7 @@ pub(crate) fn detect_log_matched_entry(
     None
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn detect_latest_watch_event_from_logs(
     start_ns: u128,
     end_ns: u128,
@@ -888,5 +889,15 @@ pub(crate) fn detect_latest_watch_event_from_logs(
             return Some(entry);
         }
     }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn detect_latest_watch_event_from_logs(
+    start_ns: u128,
+    end_ns: u128,
+    after_ordered: &[HistEntry],
+) -> Option<HistEntry> {
+    let _ = (start_ns, end_ns, after_ordered);
     None
 }
