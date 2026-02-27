@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::process::Command as ProcessCommand;
 
 use chrono::DateTime;
+use serde_json::Value;
 
 pub(crate) fn parse_title_and_total_eps(title: &str) -> (String, Option<u32>) {
     let trimmed = title.trim();
@@ -47,22 +48,32 @@ pub(crate) fn compare_episode_labels(a: &str, b: &str) -> Ordering {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn parse_mode_episode_labels(raw: &str, mode: &str) -> Option<Vec<String>> {
-    let key = format!("\"{mode}\"");
-    let key_start = raw.find(&key)? + key.len();
-    let after_key = &raw[key_start..];
-    let colon_idx = after_key.find(':')?;
-    let after_colon = &after_key[colon_idx + 1..];
-    let array_start = after_colon.find('[')?;
-    let after_array_start = &after_colon[array_start + 1..];
-    let array_end = after_array_start.find(']')?;
-    let chunk = &after_array_start[..array_end];
+    let value: Value = serde_json::from_str(raw).ok()?;
+    parse_mode_episode_labels_from_value(&value, mode)
+}
+
+fn parse_mode_episode_labels_from_value(value: &Value, mode: &str) -> Option<Vec<String>> {
+    let items = value
+        .pointer("/data/show/availableEpisodesDetail")?
+        .get(mode)?
+        .as_array()?;
 
     let mut episodes = Vec::new();
-    for token in chunk.split(',') {
-        let trimmed = token.trim().trim_matches('"');
-        if !trimmed.is_empty() && trimmed != "null" {
-            episodes.push(trimmed.to_string());
+    for item in items {
+        if item.is_null() {
+            continue;
+        }
+
+        let value = match item {
+            Value::String(text) => text.trim().to_string(),
+            Value::Number(number) => number.to_string(),
+            _ => continue,
+        };
+
+        if !value.is_empty() && value != "null" {
+            episodes.push(value);
         }
     }
     if episodes.is_empty() {
@@ -96,6 +107,10 @@ pub(crate) fn fetch_episode_labels(ani_id: &str, total_hint: Option<u32>) -> Opt
         .arg("-e")
         .arg("https://allanime.to")
         .arg("-sS")
+        .arg("--retry")
+        .arg("2")
+        .arg("--retry-delay")
+        .arg("1")
         .arg("--connect-timeout")
         .arg("3")
         .arg("--max-time")
@@ -113,11 +128,12 @@ pub(crate) fn fetch_episode_labels(ani_id: &str, total_hint: Option<u32>) -> Opt
     }
 
     let raw = String::from_utf8(output.stdout).ok()?;
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
     let mut candidates = Vec::new();
-    if let Some(sub) = parse_mode_episode_labels(&raw, "sub") {
+    if let Some(sub) = parse_mode_episode_labels_from_value(&parsed, "sub") {
         candidates.push(sub);
     }
-    if let Some(dub) = parse_mode_episode_labels(&raw, "dub") {
+    if let Some(dub) = parse_mode_episode_labels_from_value(&parsed, "dub") {
         candidates.push(dub);
     }
     let mut episodes = choose_episode_labels_candidate(candidates, total_hint)?;

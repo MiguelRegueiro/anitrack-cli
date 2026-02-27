@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ffi::OsString;
 
 use super::episode::*;
 use super::tracking::*;
@@ -535,6 +536,21 @@ fn format_last_seen_display_parses_rfc3339_timestamp() {
 fn format_last_seen_display_keeps_raw_when_invalid() {
     let raw = "not-a-timestamp";
     assert_eq!(format_last_seen_display(raw), raw);
+}
+
+#[test]
+fn resolve_ani_cli_bin_from_env_uses_override_when_present() {
+    let resolved = resolve_ani_cli_bin_from_env(Some(OsString::from("/tmp/fake-ani-cli")));
+    assert_eq!(resolved, std::path::PathBuf::from("/tmp/fake-ani-cli"));
+}
+
+#[test]
+fn resolve_ani_cli_bin_from_env_falls_back_on_missing_or_empty() {
+    let missing = resolve_ani_cli_bin_from_env(None);
+    assert_eq!(missing, std::path::PathBuf::from("ani-cli"));
+
+    let empty = resolve_ani_cli_bin_from_env(Some(OsString::new()));
+    assert_eq!(empty, std::path::PathBuf::from("ani-cli"));
 }
 
 #[test]

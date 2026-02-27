@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added CI dependency-audit enforcement with `cargo audit --deny unsound`.
+- Added regression tests for temp history directory cleanup and parser edge cases (escaped titles and malformed payload handling).
+- Added support for overriding the `ani-cli` binary path via `ANI_TRACK_ANI_CLI_BIN` (useful for integration testing and custom installs).
+
+### Changed
+- Upgraded terminal UI stack to `ratatui 0.30.0` and aligned `crossterm` usage to the current backend path.
+- Constrained `ratatui` features to `crossterm` only, reducing unnecessary dependency surface.
+- Documented explicit runtime requirements in README (`ani-cli`, `curl`, optional Linux `journalctl` enhancement).
+- Replaced ad-hoc API response string scanning with structured `serde_json` decoding for search results and episode metadata.
+- Added lightweight retry policy to metadata/search `curl` calls to reduce transient network failures.
+
+### Fixed
+- Fixed potential temp history directory leaks by introducing scoped temp-dir cleanup guards.
+- Fixed Unix terminal/signal restoration edge cases by using scoped signal and foreground-terminal guards across interactive subprocess execution.
+- Improved JSON string unescaping behavior in search-result parsing (including escaped Unicode/control sequences) for more robust API response handling.
+- Improved SQLite runtime robustness by setting a connection `busy_timeout` and attempting WAL mode on database open.
+
 ## [0.1.5] - 2026-02-27
 
 ### Added
