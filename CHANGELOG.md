@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Displayed `Last Seen` timestamps now render in the user's local timezone while DB storage remains UTC.
 - `anitrack list` displays local time with UTC offset; TUI displays compact local time without offset.
 - Refreshed the README TUI screenshot (`screenshots/anitrack-tui.png`).
+- Clarified platform support policy in README (Linux supported, macOS CI-tested with dependency caveats, Windows not officially supported).
 
 ## [0.1.6] - 2026-02-27
 
