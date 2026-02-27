@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-02-27
+
 ### Added
 - Added CI dependency-audit enforcement with `cargo audit --deny unsound`.
 - Added regression tests for temp history directory cleanup and parser edge cases (escaped titles and malformed payload handling).
@@ -137,7 +139,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Right-side episode text now matches progress logic.
 - Polished modal styling/layout for delete confirmation and last-episode notice.
 
-[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.2...v0.1.3
