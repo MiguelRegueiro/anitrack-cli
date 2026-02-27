@@ -1,6 +1,6 @@
 [package]
 name = "anitrack"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "CLI/TUI companion for ani-cli with watch-progress tracking"

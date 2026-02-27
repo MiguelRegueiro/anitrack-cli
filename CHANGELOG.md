@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-02-27
+
+### Added
+- Added replay regression coverage for first-episode fallback behavior, including explicit planning tests that verify deterministic replay flow for episode `0`.
+- Added a required manual smoke-test checklist to release docs covering `start`, `next`, `replay` (including episode `0`), TUI `PREVIOUS` edge cases, and TUI `SELECT`.
+
+### Changed
+- Clarified README behavior notes: `journalctl` log fallback is Linux-only, and non-Linux systems rely on history-based detection.
+- Refactored replay execution into an explicit replay-plan step to keep fallback behavior deterministic and easier to test.
+
+### Fixed
+- Fixed replay for episode `0` / first-entry fallback so AniTrack resolves the tracked show (`-S` when available) instead of dropping into ambiguous ani-cli show selection.
+
 ## [0.1.4] - 2026-02-27
 
 ### Added
@@ -102,7 +115,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Right-side episode text now matches progress logic.
 - Polished modal styling/layout for delete confirmation and last-episode notice.
 
-[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.1...v0.1.2
