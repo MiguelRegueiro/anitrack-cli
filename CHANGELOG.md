@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-02-27
+
 ### Added
 - Added `Previous` and `Select` actions to the TUI action bar, with left/right navigation and Enter execution.
 - Added tracked-show episode selection support in TUI (`Select`) so ani-cli opens episode selection for the currently selected show.
@@ -100,7 +102,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Right-side episode text now matches progress logic.
 - Polished modal styling/layout for delete confirmation and last-episode notice.
 
-[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.0...v0.1.1
