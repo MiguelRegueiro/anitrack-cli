@@ -13,6 +13,7 @@ use super::episode::{
 };
 use crate::db::{Database, SeenEntry};
 use anyhow::{Context, Result, anyhow};
+use serde_json::Value;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -458,75 +459,31 @@ pub(crate) struct SearchResultEntry {
 }
 
 pub(crate) fn parse_search_result_entries(raw: &str) -> Vec<SearchResultEntry> {
-    let mut entries = Vec::new();
-    let marker = "\"_id\":\"";
-    let mut cursor = 0usize;
+    let parsed: Value = match serde_json::from_str(raw) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let Some(edges) = parsed
+        .pointer("/data/shows/edges")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Vec::new();
+    };
 
-    while let Some(rel_start) = raw[cursor..].find(marker) {
-        let id_start = cursor + rel_start + marker.len();
-        let Some((id, id_end)) = parse_json_string(raw, id_start) else {
-            break;
-        };
-        let Some(rel_name_marker) = raw[id_end..].find("\"name\":\"") else {
-            cursor = id_end;
-            continue;
-        };
-        let name_start = id_end + rel_name_marker + "\"name\":\"".len();
-        let Some((title, title_end)) = parse_json_string(raw, name_start) else {
-            break;
-        };
-        entries.push(SearchResultEntry { id, title });
-        cursor = title_end;
-    }
-
-    entries
-}
-
-pub(crate) fn parse_json_string(raw: &str, start: usize) -> Option<(String, usize)> {
-    let bytes = raw.as_bytes();
-    let mut i = start;
-    let mut out = String::new();
-    let mut escaped = false;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if escaped {
-            match b {
-                b'"' => out.push('"'),
-                b'\\' => out.push('\\'),
-                b'/' => out.push('/'),
-                b'b' => out.push('\u{0008}'),
-                b'f' => out.push('\u{000C}'),
-                b'n' => out.push('\n'),
-                b'r' => out.push('\r'),
-                b't' => out.push('\t'),
-                b'u' => {
-                    if i + 4 >= bytes.len() {
-                        return None;
-                    }
-                    let hex = std::str::from_utf8(&bytes[i + 1..i + 5]).ok()?;
-                    let code = u16::from_str_radix(hex, 16).ok()? as u32;
-                    out.push(char::from_u32(code)?);
-                    i += 4;
-                }
-                _ => return None,
+    edges
+        .iter()
+        .filter_map(|edge| {
+            let id = edge.get("_id")?.as_str()?.trim();
+            let title = edge.get("name")?.as_str()?.trim();
+            if id.is_empty() || title.is_empty() {
+                return None;
             }
-            escaped = false;
-            i += 1;
-            continue;
-        }
-
-        if b == b'\\' {
-            escaped = true;
-            i += 1;
-            continue;
-        }
-        if b == b'"' {
-            return Some((out, i + 1));
-        }
-        out.push(b as char);
-        i += 1;
-    }
-    None
+            Some(SearchResultEntry {
+                id: id.to_string(),
+                title: title.to_string(),
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn find_select_nth_index_by_id(
