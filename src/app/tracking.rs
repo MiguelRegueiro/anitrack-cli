@@ -47,25 +47,84 @@ pub(crate) enum ReplayPlan {
 }
 
 #[cfg(unix)]
+struct ScopedSigaction {
+    signum: libc::c_int,
+    old_action: libc::sigaction,
+}
+
+#[cfg(unix)]
+impl ScopedSigaction {
+    fn ignore(signum: libc::c_int) -> Result<Self> {
+        unsafe {
+            let mut new_action: libc::sigaction = std::mem::zeroed();
+            new_action.sa_sigaction = libc::SIG_IGN;
+            libc::sigemptyset(&mut new_action.sa_mask);
+            new_action.sa_flags = 0;
+
+            let mut old_action: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(signum, &new_action, &mut old_action) != 0 {
+                return Err(anyhow!("failed to update signal action for {signum}"));
+            }
+
+            Ok(Self { signum, old_action })
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ScopedSigaction {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = libc::sigaction(self.signum, &self.old_action, std::ptr::null_mut());
+        }
+    }
+}
+
+#[cfg(unix)]
+struct TerminalForegroundGuard {
+    stdin_fd: libc::c_int,
+    parent_pgrp: libc::pid_t,
+    child_foreground: bool,
+}
+
+#[cfg(unix)]
+impl TerminalForegroundGuard {
+    fn new(stdin_fd: libc::c_int) -> Result<Self> {
+        let parent_pgrp = unsafe { libc::tcgetpgrp(stdin_fd) };
+        if parent_pgrp == -1 {
+            return Err(anyhow!("failed to read terminal process group"));
+        }
+        Ok(Self {
+            stdin_fd,
+            parent_pgrp,
+            child_foreground: false,
+        })
+    }
+
+    fn handoff_to_child(&mut self, child_pgrp: libc::pid_t) {
+        self.child_foreground = unsafe { libc::tcsetpgrp(self.stdin_fd, child_pgrp) == 0 };
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TerminalForegroundGuard {
+    fn drop(&mut self) {
+        if !self.child_foreground {
+            return;
+        }
+        unsafe {
+            let _ = libc::tcsetpgrp(self.stdin_fd, self.parent_pgrp);
+        }
+    }
+}
+
+#[cfg(unix)]
 pub(crate) fn with_sigint_ignored<F, R>(f: F) -> Result<R>
 where
     F: FnOnce() -> Result<R>,
 {
-    unsafe {
-        let mut new_action: libc::sigaction = std::mem::zeroed();
-        new_action.sa_sigaction = libc::SIG_IGN;
-        libc::sigemptyset(&mut new_action.sa_mask);
-        new_action.sa_flags = 0;
-
-        let mut old_action: libc::sigaction = std::mem::zeroed();
-        if libc::sigaction(libc::SIGINT, &new_action, &mut old_action) != 0 {
-            return Err(anyhow!("failed to ignore SIGINT"));
-        }
-
-        let result = f();
-        let _ = libc::sigaction(libc::SIGINT, &old_action, std::ptr::null_mut());
-        result
-    }
+    let _sigint_guard = ScopedSigaction::ignore(libc::SIGINT)?;
+    f()
 }
 
 #[cfg(not(unix))]
@@ -79,14 +138,8 @@ where
 #[cfg(unix)]
 pub(crate) fn run_interactive_cmd(mut cmd: ProcessCommand) -> Result<ExitStatus> {
     let stdin_fd = libc::STDIN_FILENO;
-    let parent_pgrp = unsafe { libc::tcgetpgrp(stdin_fd) };
-    if parent_pgrp == -1 {
-        return Err(anyhow!("failed to read terminal process group"));
-    }
-
-    unsafe {
-        let _ = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
-    }
+    let _sigttou_guard = ScopedSigaction::ignore(libc::SIGTTOU)?;
+    let mut terminal_guard = TerminalForegroundGuard::new(stdin_fd)?;
 
     unsafe {
         cmd.pre_exec(|| {
@@ -102,18 +155,8 @@ pub(crate) fn run_interactive_cmd(mut cmd: ProcessCommand) -> Result<ExitStatus>
 
     let mut child = cmd.spawn().context("failed to spawn ani-cli")?;
     let child_pgid = child.id() as libc::pid_t;
-    unsafe {
-        let _ = libc::tcsetpgrp(stdin_fd, child_pgid);
-    }
-
-    let status = child.wait().context("failed waiting on ani-cli")?;
-
-    unsafe {
-        let _ = libc::tcsetpgrp(stdin_fd, parent_pgrp);
-        let _ = libc::signal(libc::SIGTTOU, libc::SIG_DFL);
-    }
-
-    Ok(status)
+    terminal_guard.handoff_to_child(child_pgid);
+    child.wait().context("failed waiting on ani-cli")
 }
 
 #[cfg(not(unix))]
@@ -190,8 +233,8 @@ pub(crate) fn run_ani_cli_continue(
     item: &SeenEntry,
     stored_episode: &str,
 ) -> Result<PlaybackOutcome> {
-    let temp_hist_dir = make_temp_hist_dir()?;
-    let histfile = temp_hist_dir.join("ani-hsts");
+    let temp_hist_dir = TempHistDir::new()?;
+    let histfile = temp_hist_dir.histfile_path();
     fs::write(
         &histfile,
         format!("{stored_episode}\t{}\t{}\n", item.ani_id, item.title),
@@ -206,7 +249,7 @@ pub(crate) fn run_ani_cli_continue(
     let ani_cli_bin = resolve_ani_cli_bin();
     let status = ProcessCommand::new(&ani_cli_bin)
         .arg("-c")
-        .env("ANI_CLI_HIST_DIR", &temp_hist_dir)
+        .env("ANI_CLI_HIST_DIR", temp_hist_dir.path())
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -224,7 +267,7 @@ pub(crate) fn run_ani_cli_continue(
     } else {
         None
     };
-    let _ = fs::remove_dir_all(&temp_hist_dir);
+
     Ok(PlaybackOutcome {
         success: status.success(),
         final_episode,
@@ -439,14 +482,26 @@ pub(crate) fn parse_json_string(raw: &str, start: usize) -> Option<(String, usiz
     while i < bytes.len() {
         let b = bytes[i];
         if escaped {
-            out.push(match b {
-                b'"' => '"',
-                b'\\' => '\\',
-                b'n' => '\n',
-                b'r' => '\r',
-                b't' => '\t',
-                _ => b as char,
-            });
+            match b {
+                b'"' => out.push('"'),
+                b'\\' => out.push('\\'),
+                b'/' => out.push('/'),
+                b'b' => out.push('\u{0008}'),
+                b'f' => out.push('\u{000C}'),
+                b'n' => out.push('\n'),
+                b'r' => out.push('\r'),
+                b't' => out.push('\t'),
+                b'u' => {
+                    if i + 4 >= bytes.len() {
+                        return None;
+                    }
+                    let hex = std::str::from_utf8(&bytes[i + 1..i + 5]).ok()?;
+                    let code = u16::from_str_radix(hex, 16).ok()? as u32;
+                    out.push(char::from_u32(code)?);
+                    i += 4;
+                }
+                _ => return None,
+            }
             escaped = false;
             i += 1;
             continue;
@@ -598,6 +653,33 @@ pub(crate) fn make_temp_hist_dir() -> Result<PathBuf> {
     fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create temp history dir {}", dir.display()))?;
     Ok(dir)
+}
+
+#[derive(Debug)]
+pub(crate) struct TempHistDir {
+    path: PathBuf,
+}
+
+impl TempHistDir {
+    pub(crate) fn new() -> Result<Self> {
+        Ok(Self {
+            path: make_temp_hist_dir()?,
+        })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn histfile_path(&self) -> PathBuf {
+        self.path.join("ani-hsts")
+    }
+}
+
+impl Drop for TempHistDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 pub(crate) fn ani_cli_histfile() -> PathBuf {

@@ -9,6 +9,11 @@ AniTrack is a companion CLI for `ani-cli`. It adds watch-progress tracking and n
 AniTrack depends on [`ani-cli`](https://github.com/pystardust/ani-cli) for anime search and streaming playback.
 This project does not replace `ani-cli`; it orchestrates and extends the workflow around it.
 
+## Requirements
+- `ani-cli` installed and available on your `PATH`
+- `curl` available on your `PATH` (used for episode/search metadata lookups)
+- Linux-only optional enhancement: `journalctl` (used as a fallback signal when history content is unchanged)
+
 ## Installation
 
 ### Arch Linux (AUR)

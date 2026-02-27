@@ -48,11 +48,15 @@ pub(crate) fn compare_episode_labels(a: &str, b: &str) -> Ordering {
 }
 
 pub(crate) fn parse_mode_episode_labels(raw: &str, mode: &str) -> Option<Vec<String>> {
-    let marker = format!("\"{mode}\":[");
-    let start = raw.find(&marker)? + marker.len();
-    let after = &raw[start..];
-    let end = after.find(']')?;
-    let chunk = &after[..end];
+    let key = format!("\"{mode}\"");
+    let key_start = raw.find(&key)? + key.len();
+    let after_key = &raw[key_start..];
+    let colon_idx = after_key.find(':')?;
+    let after_colon = &after_key[colon_idx + 1..];
+    let array_start = after_colon.find('[')?;
+    let after_array_start = &after_colon[array_start + 1..];
+    let array_end = after_array_start.find(']')?;
+    let chunk = &after_array_start[..array_end];
 
     let mut episodes = Vec::new();
     for token in chunk.split(',') {

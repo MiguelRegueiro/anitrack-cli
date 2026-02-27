@@ -536,3 +536,43 @@ fn format_last_seen_display_keeps_raw_when_invalid() {
     let raw = "not-a-timestamp";
     assert_eq!(format_last_seen_display(raw), raw);
 }
+
+#[test]
+fn temp_hist_dir_drop_removes_directory() {
+    let temp_hist_dir = TempHistDir::new().expect("temp history dir should be created");
+    let temp_path = temp_hist_dir.path().to_path_buf();
+    assert!(
+        temp_path.exists(),
+        "temp history dir should exist while guard is alive"
+    );
+    drop(temp_hist_dir);
+    assert!(
+        !temp_path.exists(),
+        "temp history dir should be removed when guard is dropped"
+    );
+}
+
+#[test]
+fn parse_mode_episode_labels_extracts_string_and_numeric_values() {
+    let payload = r#"{"data":{"show":{"availableEpisodesDetail":{"sub":[ "0","1",null,"2" ]}}}}"#;
+    let episodes = parse_mode_episode_labels(payload, "sub").expect("sub episodes should parse");
+    assert_eq!(episodes, vec!["0", "1", "2"]);
+}
+
+#[test]
+fn parse_search_result_entries_handles_escaped_titles() {
+    let raw = r#"{"data":{"shows":{"edges":[{"_id":"id-1","name":"Boku no Hero Academia: Heroes Rising \"Special\""}]}}}"#;
+    let entries = parse_search_result_entries(raw);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, "id-1");
+    assert_eq!(
+        entries[0].title,
+        "Boku no Hero Academia: Heroes Rising \"Special\""
+    );
+}
+
+#[test]
+fn parse_search_result_entries_returns_empty_on_invalid_json() {
+    let entries = parse_search_result_entries("{not json");
+    assert!(entries.is_empty());
+}
