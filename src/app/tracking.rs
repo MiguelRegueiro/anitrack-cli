@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitStatus, Stdio};
@@ -226,7 +227,14 @@ pub(crate) fn run_ani_cli_search(db: &Database) -> Result<(String, Option<String
 }
 
 pub(crate) fn resolve_ani_cli_bin() -> PathBuf {
-    PathBuf::from("ani-cli")
+    resolve_ani_cli_bin_from_env(env::var_os("ANI_TRACK_ANI_CLI_BIN"))
+}
+
+pub(crate) fn resolve_ani_cli_bin_from_env(env_value: Option<OsString>) -> PathBuf {
+    match env_value {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => PathBuf::from("ani-cli"),
+    }
 }
 
 pub(crate) fn run_ani_cli_continue(
