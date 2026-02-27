@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Displayed `Last Seen` timestamps now render in the user's local timezone (with UTC offset) while DB storage remains UTC.
+
 ## [0.1.6] - 2026-02-27
 
 ### Added

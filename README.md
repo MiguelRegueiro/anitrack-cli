@@ -140,6 +140,7 @@ AniTrack also accepts space-separated history lines when tabs are not present:
 ## Behavior Notes
 - If the database or parent directory does not exist, AniTrack creates them automatically.
 - AniTrack sets a short SQLite busy timeout and attempts WAL mode when opening the DB to improve resilience under brief lock contention.
+- AniTrack stores timestamps in UTC and displays them in your local timezone (`YYYY-MM-DD HH:MM +HH:MM`).
 - If `anitrack next` or `anitrack replay` playback fails or is interrupted, progress is not updated.
 - If you navigate episodes inside `ani-cli` after playback starts (for example using its `next` option), AniTrack stores the last episode reached when the session ends successfully.
 - If no prior entry exists, `next` and `replay` instruct you to run `anitrack start` first.

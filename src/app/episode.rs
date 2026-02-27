@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::process::Command as ProcessCommand;
 
-use chrono::DateTime;
+use chrono::{DateTime, Local};
 use serde_json::Value;
 
 pub(crate) fn parse_title_and_total_eps(title: &str) -> (String, Option<u32>) {
@@ -331,6 +331,10 @@ pub(crate) fn parse_episode_u32(ep: &str) -> Option<u32> {
 
 pub(crate) fn format_last_seen_display(raw: &str) -> String {
     DateTime::parse_from_rfc3339(raw)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .map(|dt| {
+            dt.with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M %:z")
+                .to_string()
+        })
         .unwrap_or_else(|_| raw.to_string())
 }
