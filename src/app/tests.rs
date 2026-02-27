@@ -1,9 +1,25 @@
 use std::collections::HashMap;
+#[cfg(unix)]
+use std::ffi::OsStr;
 use std::ffi::OsString;
+
+#[cfg(unix)]
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(unix)]
+use crate::db::Database;
 
 use super::episode::*;
 use super::tracking::*;
 use super::tui::TuiAction;
+#[cfg(unix)]
+use super::{run_next, run_start};
 
 #[test]
 fn parse_hist_line_accepts_valid_format() {
@@ -591,4 +607,185 @@ fn parse_search_result_entries_handles_escaped_titles() {
 fn parse_search_result_entries_returns_empty_on_invalid_json() {
     let entries = parse_search_result_entries("{not json");
     assert!(entries.is_empty());
+}
+
+#[cfg(unix)]
+static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[cfg(unix)]
+fn env_lock() -> &'static Mutex<()> {
+    ENV_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct TestSandbox {
+    root: PathBuf,
+}
+
+#[cfg(unix)]
+impl TestSandbox {
+    fn new(prefix: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "anitrack-integration-{prefix}-{}-{}",
+            std::process::id(),
+            unix_now_ns()
+        ));
+        fs::create_dir_all(&root).expect("test sandbox should be created");
+        Self { root }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TestSandbox {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+#[cfg(unix)]
+struct ScopedEnvVar {
+    key: String,
+    previous: Option<OsString>,
+}
+
+#[cfg(unix)]
+impl ScopedEnvVar {
+    fn set(key: &str, value: &OsStr) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self {
+            key: key.to_string(),
+            previous,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        match self.previous.as_ref() {
+            Some(prev) => unsafe {
+                std::env::set_var(&self.key, prev);
+            },
+            None => unsafe {
+                std::env::remove_var(&self.key);
+            },
+        }
+    }
+}
+
+#[cfg(unix)]
+fn open_test_db(root: &Path) -> Database {
+    let db = Database::open(&root.join("anitrack.db")).expect("test db should open");
+    db.migrate().expect("test db migration should succeed");
+    db
+}
+
+#[cfg(unix)]
+fn create_fake_ani_cli(root: &Path) -> PathBuf {
+    let script_path = root.join("fake-ani-cli.sh");
+    let script = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+mode="${ANITRACK_FAKE_MODE:-}"
+hist_dir="${ANI_CLI_HIST_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ani-cli}"
+hist_file="${hist_dir}/ani-hsts"
+mkdir -p "${hist_dir}"
+
+case "${mode}" in
+  start_success)
+    printf '1\tshow-1\tShow One\n' >> "${hist_file}"
+    ;;
+  next_success)
+    line="$(tail -n 1 "${hist_file}" 2>/dev/null || true)"
+    if [ -n "${line}" ]; then
+      IFS=$'\t' read -r ep ani_id title <<< "${line}"
+      next_ep=$((ep + 1))
+      printf '%s\t%s\t%s\n' "${next_ep}" "${ani_id}" "${title}" > "${hist_file}"
+    fi
+    ;;
+  next_fail)
+    exit 1
+    ;;
+esac
+"#;
+    fs::write(&script_path, script).expect("fake ani-cli should be written");
+    let mut perms = fs::metadata(&script_path)
+        .expect("fake script metadata should exist")
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&script_path, perms).expect("fake ani-cli should be executable");
+    script_path
+}
+
+#[cfg(unix)]
+#[test]
+fn integration_start_records_watch_progress_with_fake_ani_cli() {
+    let _env_guard = env_lock().lock().expect("env lock should be acquired");
+    let sandbox = TestSandbox::new("start");
+    let db = open_test_db(&sandbox.root);
+    let fake_ani_cli = create_fake_ani_cli(&sandbox.root);
+    let hist_dir = sandbox.root.join("hist");
+    fs::create_dir_all(&hist_dir).expect("hist directory should be created");
+
+    let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
+    let _hist = ScopedEnvVar::set("ANI_CLI_HIST_DIR", hist_dir.as_os_str());
+    let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("start_success"));
+
+    run_start(&db).expect("start command should succeed");
+
+    let last_seen = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should be recorded");
+    assert_eq!(last_seen.ani_id, "show-1");
+    assert_eq!(last_seen.title, "Show One");
+    assert_eq!(last_seen.last_episode, "1");
+}
+
+#[cfg(unix)]
+#[test]
+fn integration_next_updates_progress_when_fake_continue_succeeds() {
+    let _env_guard = env_lock().lock().expect("env lock should be acquired");
+    let sandbox = TestSandbox::new("next-success");
+    let db = open_test_db(&sandbox.root);
+    let fake_ani_cli = create_fake_ani_cli(&sandbox.root);
+    db.upsert_seen("show-1", "Show One", "1")
+        .expect("seed row should be inserted");
+
+    let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
+    let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("next_success"));
+
+    run_next(&db).expect("next command should complete");
+
+    let last_seen = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should exist");
+    assert_eq!(last_seen.last_episode, "2");
+}
+
+#[cfg(unix)]
+#[test]
+fn integration_next_keeps_progress_when_fake_continue_fails() {
+    let _env_guard = env_lock().lock().expect("env lock should be acquired");
+    let sandbox = TestSandbox::new("next-fail");
+    let db = open_test_db(&sandbox.root);
+    let fake_ani_cli = create_fake_ani_cli(&sandbox.root);
+    db.upsert_seen("show-1", "Show One", "1")
+        .expect("seed row should be inserted");
+
+    let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
+    let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("next_fail"));
+
+    run_next(&db).expect("next command should not bubble fake failure");
+
+    let last_seen = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should exist");
+    assert_eq!(last_seen.last_episode, "1");
 }
