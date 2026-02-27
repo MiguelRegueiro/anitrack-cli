@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `anitrack list` displays local time with UTC offset; TUI displays compact local time without offset.
 - Refreshed the README TUI screenshot (`screenshots/anitrack-tui.png`).
 - Clarified platform support policy in README (Linux supported, macOS CI-tested with dependency caveats, Windows not officially supported).
+- Refined README information architecture for end users and moved advanced usage/runtime details into `docs/usage.md`.
 
 ## [0.1.6] - 2026-02-27
 

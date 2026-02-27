@@ -2,6 +2,7 @@
 .xdg/
 /docs/*
 !/docs/release.md
+!/docs/usage.md
 
 # release artifacts
 dist/
