@@ -706,7 +706,7 @@ case "${mode}" in
   start_success)
     printf '1\tshow-1\tShow One\n' >> "${hist_file}"
     ;;
-  replay_success|next_success)
+  replay_success|next_success|previous_success)
     line="$(tail -n 1 "${hist_file}" 2>/dev/null || true)"
     if [ -n "${line}" ]; then
       IFS=$'\t' read -r ep ani_id title <<< "${line}"
@@ -720,7 +720,7 @@ case "${mode}" in
     episode="${ANITRACK_FAKE_EPISODE:-2}"
     printf '%s\t%s\t%s\n' "${episode}" "${ani_id}" "${title}" > "${hist_file}"
     ;;
-  next_fail)
+  next_fail|previous_fail)
     exit 1
     ;;
 esac
@@ -864,4 +864,94 @@ fn integration_select_updates_progress_with_override_without_network() {
         .expect("db query should succeed")
         .expect("entry should exist");
     assert_eq!(last_seen.last_episode, "2");
+}
+
+#[cfg(unix)]
+#[test]
+fn integration_previous_updates_progress_when_fake_continue_succeeds() {
+    let _env_guard = env_lock_guard();
+    let sandbox = TestSandbox::new("previous-success");
+    let db = open_test_db(&sandbox.root);
+    let fake_ani_cli = create_fake_ani_cli(&sandbox.root);
+    let item = crate::db::SeenEntry {
+        ani_id: "show-1".to_string(),
+        title: "Show One".to_string(),
+        last_episode: "3".to_string(),
+        last_seen_at: "2026-02-27T00:00:00+00:00".to_string(),
+    };
+    let episodes = vec!["1".to_string(), "2".to_string(), "3".to_string()];
+
+    let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
+    let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("previous_success"));
+
+    let outcome = run_ani_cli_previous(&item, Some(&episodes)).expect("previous action should run");
+    assert!(outcome.success, "previous action should report success");
+    let updated_ep = outcome
+        .final_episode
+        .expect("updated episode should be detected");
+
+    db.upsert_seen(&item.ani_id, &item.title, &updated_ep)
+        .expect("db update should succeed");
+    let last_seen = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should exist");
+    assert_eq!(last_seen.last_episode, "2");
+}
+
+#[cfg(unix)]
+#[test]
+fn integration_previous_keeps_progress_when_no_previous_available() {
+    let _env_guard = env_lock_guard();
+    let sandbox = TestSandbox::new("previous-noop");
+    let db = open_test_db(&sandbox.root);
+    db.upsert_seen("show-1", "Show One", "0")
+        .expect("seed row should be inserted");
+    let item = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should exist");
+    let episodes = vec!["0".to_string(), "1".to_string(), "2".to_string()];
+
+    let err =
+        run_ani_cli_previous(&item, Some(&episodes)).expect_err("no previous should return error");
+    assert!(
+        err.to_string().contains("no previous episode available"),
+        "unexpected error: {err}"
+    );
+
+    let last_seen = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should exist");
+    assert_eq!(last_seen.last_episode, "0");
+}
+
+#[cfg(unix)]
+#[test]
+fn integration_previous_keeps_progress_when_playback_fails() {
+    let _env_guard = env_lock_guard();
+    let sandbox = TestSandbox::new("previous-fail");
+    let db = open_test_db(&sandbox.root);
+    let fake_ani_cli = create_fake_ani_cli(&sandbox.root);
+    db.upsert_seen("show-1", "Show One", "3")
+        .expect("seed row should be inserted");
+    let item = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should exist");
+    let episodes = vec!["1".to_string(), "2".to_string(), "3".to_string()];
+
+    let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
+    let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("previous_fail"));
+
+    let outcome = run_ani_cli_previous(&item, Some(&episodes)).expect("previous action should run");
+    assert!(!outcome.success, "previous action should report failure");
+    assert!(outcome.final_episode.is_none());
+
+    let last_seen = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should exist");
+    assert_eq!(last_seen.last_episode, "3");
 }
