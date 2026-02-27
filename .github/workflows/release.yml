@@ -64,6 +64,15 @@ jobs:
           echo "version=${CARGO_VERSION}" >> "${GITHUB_OUTPUT}"
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
+      - name: Verify changelog entry exists
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if ! grep -q "^## \\[${VERSION}\\]" CHANGELOG.md; then
+            echo "Missing CHANGELOG.md section for version ${VERSION}"
+            echo "Expected header format: ## [${VERSION}] - YYYY-MM-DD"
+            exit 1
+          fi
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -110,17 +119,37 @@ jobs:
     runs-on: ubuntu-latest
     needs: [validate, build-linux-x86_64]
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           name: release-assets
           path: release-assets
 
+      - name: Extract release notes from changelog
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          awk -v version="${VERSION}" '
+            $0 ~ "^## \\[" version "\\]" { in_section = 1; next }
+            in_section && $0 ~ "^## \\[" { exit }
+            in_section { print }
+          ' CHANGELOG.md > release-notes.md
+
+          # Trim leading blank lines produced after section header removal.
+          sed -i '/./,$!d' release-notes.md
+
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "Failed to extract release notes for ${VERSION} from CHANGELOG.md"
+            exit 1
+          fi
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.validate.outputs.tag_name }}
-          generate_release_notes: true
+          body_path: release-notes.md
           files: release-assets/*
 
   publish-crates:
