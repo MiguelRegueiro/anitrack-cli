@@ -1,4 +1,4 @@
-# AniTrack
+# anitrack
 
 AniTrack is a companion CLI for `ani-cli`. It adds watch-progress tracking and navigation while delegating search and playback to `ani-cli`.
 
@@ -140,5 +140,8 @@ AniTrack also accepts space-separated history lines when tabs are not present:
 This project is licensed under the GNU General Public License v3.0 or later (`GPL-3.0-or-later`).
 See [LICENSE](LICENSE).
 
-## Release Automation
+## Changelog
+See [CHANGELOG.md](CHANGELOG.md) for release history and notable changes.
+
+## Maintainer Notes
 Release workflow details (CI, GitHub Releases, crates.io publish, and AUR update values) are documented in [docs/release.md](docs/release.md).
