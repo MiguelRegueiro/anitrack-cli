@@ -126,7 +126,7 @@ mod tests {
                                 })
                             };
                             std::thread::spawn(move || {
-                                let _ = consume_request(&mut stream);
+                                consume_request_once(&mut stream);
                                 serve_behavior(&mut stream, behavior);
                             });
                         }
@@ -160,29 +160,10 @@ mod tests {
         }
     }
 
-    fn consume_request(stream: &mut TcpStream) -> std::io::Result<()> {
-        stream.set_read_timeout(Some(Duration::from_millis(200)))?;
+    fn consume_request_once(stream: &mut TcpStream) {
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(20)));
         let mut buf = [0_u8; 1024];
-        let mut data = Vec::new();
-        loop {
-            match stream.read(&mut buf) {
-                Ok(0) => break,
-                Ok(read) => {
-                    data.extend_from_slice(&buf[..read]);
-                    if data.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                Err(err)
-                    if err.kind() == std::io::ErrorKind::WouldBlock
-                        || err.kind() == std::io::ErrorKind::TimedOut =>
-                {
-                    break;
-                }
-                Err(err) => return Err(err),
-            }
-        }
-        Ok(())
+        let _ = stream.read(&mut buf);
     }
 
     fn reason_phrase(status: u16) -> &'static str {
@@ -271,7 +252,7 @@ mod tests {
     #[test]
     fn retries_transport_timeout_and_recovers() {
         let server = TestServer::spawn(vec![
-            Behavior::DelayRespond(Duration::from_millis(120), 200, "slow".to_string()),
+            Behavior::DelayRespond(Duration::from_millis(250), 200, "slow".to_string()),
             Behavior::Respond(200, "ok".to_string()),
         ]);
         let query = vec![("q".to_string(), "x".to_string())];
@@ -281,7 +262,7 @@ mod tests {
             "https://example.test",
             &query,
             Duration::from_millis(250),
-            Duration::from_millis(20),
+            Duration::from_millis(80),
             2,
             Duration::from_millis(1),
         );
