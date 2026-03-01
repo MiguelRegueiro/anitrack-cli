@@ -20,7 +20,8 @@ It does not replace `ani-cli`; it orchestrates and extends that workflow.
 ## Requirements
 - `ani-cli` installed and available on your `PATH`
 - Linux-only optional enhancement: `journalctl` (used as a fallback signal when history content is unchanged)
-- For macOS dependency setup (`curl`, `grep`, `aria2`, `ffmpeg`, `git`, `fzf`, `yt-dlp`, and player integration), follow the upstream `ani-cli` install guidance: <https://github.com/pystardust/ani-cli>
+- AniTrack performs metadata/search HTTP requests natively (no separate `curl` dependency for AniTrack itself).
+- For macOS runtime dependencies required by `ani-cli` (`curl`, `grep`, `aria2`, `ffmpeg`, `git`, `fzf`, `yt-dlp`, and player integration), follow upstream guidance: <https://github.com/pystardust/ani-cli>
 
 ## Installation
 
