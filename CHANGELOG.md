@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `anitrack list` displays local time with UTC offset; TUI displays compact local time without offset.
 - Refreshed the README TUI screenshot (`screenshots/anitrack-tui.png`).
 - Clarified platform support policy in README (Linux supported, macOS CI-tested with dependency caveats, Windows experimental).
-- Refined README information architecture for end users and moved advanced usage/runtime details into `docs/usage.md`.
+- Refined README information architecture for end users, with expanded usage/runtime behavior moved into collapsible README sections.
 - Refactored large runtime modules into focused submodules (`src/app/tracking/` and `src/app/tui/`) to improve maintainability and reviewability.
 - Improved diagnostics for episode metadata and show search lookups so external/API failures produce explicit warnings instead of silent `None` fallbacks.
 - Replaced metadata/search `curl` subprocess calls with native HTTP requests using `ureq`, preserving retry/timeout behavior while improving portability.
@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI Selected panel now surfaces metadata lookup warnings for better runtime debuggability.
 - Improved playback failure messaging in CLI/TUI to include actionable `ani-cli` exit details (including a network/interruption hint for common failure exits).
 - Hardened SQLite migrations with `PRAGMA user_version` and explicit forward-only schema steps for safer upgrades across releases.
-- Added contributor guidance in `docs/usage.md` for extending forward-only DB migrations (`SCHEMA_VERSION` + migration step pattern).
+- Added `CONTRIBUTING.md` with development workflow, forward-only DB migration rules (`SCHEMA_VERSION` + migration step pattern), and release process guidance.
 - Expanded CI integration-harness coverage to `windows-latest` in addition to Linux/macOS.
 - Updated Windows platform status to experimental runtime support with integration-harness CI coverage.
 
