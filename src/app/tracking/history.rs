@@ -294,18 +294,18 @@ pub(crate) fn detect_log_matched_entry(
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn detect_latest_watch_event_from_logs(
+pub(super) fn detect_latest_watch_event_from_logs_with_diagnostics(
     start_ns: u128,
     end_ns: u128,
     after_ordered: &[HistEntry],
-) -> Option<HistEntry> {
+) -> (Option<HistEntry>, Option<String>) {
     if after_ordered.is_empty() {
-        return None;
+        return (None, None);
     }
 
     let since_secs = start_ns / 1_000_000_000;
     let until_secs = (end_ns / 1_000_000_000).saturating_add(5);
-    let output = ProcessCommand::new("journalctl")
+    let output = match ProcessCommand::new("journalctl")
         .arg("-t")
         .arg("ani-cli")
         .arg("--since")
@@ -315,9 +315,32 @@ pub(crate) fn detect_latest_watch_event_from_logs(
         .arg("--output=short-unix")
         .arg("--no-pager")
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(err) => {
+            return (
+                None,
+                Some(format!(
+                    "journalctl fallback unavailable: failed to spawn journalctl ({err})"
+                )),
+            );
+        }
+    };
     if !output.status.success() {
-        return None;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        let warning = if detail.is_empty() {
+            format!(
+                "journalctl fallback unavailable: journalctl exited with {}",
+                output.status
+            )
+        } else {
+            format!(
+                "journalctl fallback unavailable: journalctl exited with {} ({detail})",
+                output.status
+            )
+        };
+        return (None, Some(warning));
     }
 
     let upper_bound_ns = end_ns.saturating_add(5_000_000_000);
@@ -334,18 +357,18 @@ pub(crate) fn detect_latest_watch_event_from_logs(
 
     for (_, message) in logs.iter().rev() {
         if let Some(entry) = detect_log_matched_entry(message, after_ordered) {
-            return Some(entry);
+            return (Some(entry), None);
         }
     }
-    None
+    (None, None)
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn detect_latest_watch_event_from_logs(
+pub(super) fn detect_latest_watch_event_from_logs_with_diagnostics(
     start_ns: u128,
     end_ns: u128,
     after_ordered: &[HistEntry],
-) -> Option<HistEntry> {
+) -> (Option<HistEntry>, Option<String>) {
     let _ = (start_ns, end_ns, after_ordered);
-    None
+    (None, None)
 }

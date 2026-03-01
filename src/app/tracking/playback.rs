@@ -14,8 +14,8 @@ use super::super::episode::{
 use super::api::resolve_select_nth_for_item_with_diagnostics;
 use super::history::{
     ani_cli_histfile, append_history_warnings, detect_latest_watch_event,
-    detect_latest_watch_event_from_logs, history_file_touched, read_hist_map, read_histfile_sig,
-    unix_now_ns,
+    detect_latest_watch_event_from_logs_with_diagnostics, history_file_touched, read_hist_map,
+    read_histfile_sig, unix_now_ns,
 };
 use super::process::{run_interactive_cmd, with_sigint_ignored};
 use super::{PlaybackOutcome, ReplayPlan};
@@ -61,11 +61,15 @@ pub(crate) fn run_ani_cli_search(db: &Database) -> Result<(String, Option<String
     let mut changed_id = None;
     let changed =
         detect_latest_watch_event(&before, &before_ordered, &after_ordered).or_else(|| {
-            detect_latest_watch_event_from_logs(
+            let (entry, log_warning) = detect_latest_watch_event_from_logs_with_diagnostics(
                 log_window_start_ns,
                 log_window_end_ns,
                 &after_ordered,
-            )
+            );
+            if let Some(log_warning) = log_warning {
+                warnings.push(log_warning);
+            }
+            entry
         });
     let mut message = if let Some(changed) = changed {
         db.upsert_seen(&changed.id, &changed.title, &changed.ep)?;
