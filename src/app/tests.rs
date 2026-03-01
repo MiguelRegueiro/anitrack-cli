@@ -976,6 +976,15 @@ fn integration_previous_keeps_progress_when_playback_fails() {
     let outcome = run_ani_cli_previous(&item, Some(&episodes)).expect("previous action should run");
     assert!(!outcome.success, "previous action should report failure");
     assert!(outcome.final_episode.is_none());
+    assert!(
+        outcome
+            .failure_detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("possible network outage or interrupted playback"),
+        "failure detail should include actionable hint: {:?}",
+        outcome.failure_detail
+    );
 
     let last_seen = db
         .last_seen()

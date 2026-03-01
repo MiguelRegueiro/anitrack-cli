@@ -26,6 +26,7 @@ pub(crate) struct HistFileSig {
 pub(crate) struct PlaybackOutcome {
     pub(crate) success: bool,
     pub(crate) final_episode: Option<String>,
+    pub(crate) failure_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
