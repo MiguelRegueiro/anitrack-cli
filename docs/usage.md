@@ -69,3 +69,15 @@ AniTrack also accepts space-separated history lines when tabs are not present:
 - AniTrack performs metadata/search HTTP requests natively and no longer requires a separate `curl` binary.
 - Metadata/search lookup failures are surfaced as warnings (instead of silent fallback), including in the TUI Selected panel metadata area.
 - CI runs integration-harness tests on Linux, macOS, and Windows (`integration_` test subset).
+
+## Database Migration Workflow (Contributors)
+
+AniTrack uses `PRAGMA user_version` with forward-only migrations in `src/db.rs`.
+
+When adding a new schema change:
+- Increase `SCHEMA_VERSION`.
+- Add a new `match` arm in `Database::migrate()` for that exact next version only.
+- Apply SQL for the new step in that arm (`CREATE`, `ALTER`, backfill, etc.).
+- Keep prior migration arms unchanged (never rewrite old migrations in released versions).
+- Let migration set `PRAGMA user_version = next_version` only after that step succeeds.
+- Add/extend tests for upgrade paths (fresh DB, legacy DB, and previous-version-to-latest).
