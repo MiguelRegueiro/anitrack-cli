@@ -1,6 +1,8 @@
 use std::process::{Command as ProcessCommand, ExitStatus};
 
-use anyhow::{Context, Result, anyhow};
+#[cfg(unix)]
+use anyhow::anyhow;
+use anyhow::{Context, Result};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;

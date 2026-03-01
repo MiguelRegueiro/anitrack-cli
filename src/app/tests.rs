@@ -18,10 +18,12 @@ use chrono::{DateTime, Local};
 use crate::db::Database;
 
 use super::episode::*;
+#[cfg(unix)]
+use super::run_replay;
 use super::tracking::*;
 use super::tui::TuiAction;
 #[cfg(any(unix, windows))]
-use super::{run_next, run_replay, run_start};
+use super::{run_next, run_start};
 
 #[test]
 fn parse_hist_line_accepts_valid_format() {
