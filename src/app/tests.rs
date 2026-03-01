@@ -1,27 +1,29 @@
 use std::collections::HashMap;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::ffi::OsStr;
 use std::ffi::OsString;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::sync::{Mutex, OnceLock};
 
 use chrono::{DateTime, Local};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::db::Database;
 
 use super::episode::*;
+#[cfg(unix)]
+use super::run_replay;
 use super::tracking::*;
 use super::tui::TuiAction;
-#[cfg(unix)]
-use super::{run_next, run_replay, run_start};
+#[cfg(any(unix, windows))]
+use super::{run_next, run_start};
 
 #[test]
 fn parse_hist_line_accepts_valid_format() {
@@ -635,28 +637,28 @@ fn parse_search_result_entries_returns_empty_on_invalid_json() {
     assert!(entries.is_empty());
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn env_lock() -> &'static Mutex<()> {
     ENV_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn env_lock_guard() -> std::sync::MutexGuard<'static, ()> {
     env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug)]
 struct TestSandbox {
     root: PathBuf,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl TestSandbox {
     fn new(prefix: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
@@ -669,20 +671,20 @@ impl TestSandbox {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Drop for TestSandbox {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct ScopedEnvVar {
     key: String,
     previous: Option<OsString>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl ScopedEnvVar {
     fn set(key: &str, value: &OsStr) -> Self {
         let previous = std::env::var_os(key);
@@ -696,7 +698,7 @@ impl ScopedEnvVar {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Drop for ScopedEnvVar {
     fn drop(&mut self) {
         match self.previous.as_ref() {
@@ -710,7 +712,7 @@ impl Drop for ScopedEnvVar {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn open_test_db(root: &Path) -> Database {
     let db = Database::open(&root.join("anitrack.db")).expect("test db should open");
     db.migrate().expect("test db migration should succeed");
@@ -980,4 +982,103 @@ fn integration_previous_keeps_progress_when_playback_fails() {
         .expect("db query should succeed")
         .expect("entry should exist");
     assert_eq!(last_seen.last_episode, "3");
+}
+
+#[cfg(windows)]
+fn create_fake_ani_cli(root: &Path) -> PathBuf {
+    let cmd_path = root.join("fake-ani-cli.cmd");
+    let ps1_path = root.join("fake-ani-cli.ps1");
+    let cmd_script = "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0fake-ani-cli.ps1\"\r\nexit /b %ERRORLEVEL%\r\n";
+    let ps1_script = r#"
+$mode = $env:ANITRACK_FAKE_MODE
+if ($env:ANI_CLI_HIST_DIR) {
+  $histDir = $env:ANI_CLI_HIST_DIR
+} elseif ($env:XDG_STATE_HOME) {
+  $histDir = Join-Path $env:XDG_STATE_HOME "ani-cli"
+} else {
+  $histDir = Join-Path $env:USERPROFILE ".local\state\ani-cli"
+}
+$histFile = Join-Path $histDir "ani-hsts"
+New-Item -ItemType Directory -Path $histDir -Force | Out-Null
+
+function Bump-History {
+  if (-not (Test-Path $histFile)) { return }
+  $line = Get-Content -Path $histFile | Select-Object -Last 1
+  if (-not $line) { return }
+  $parts = $line -split "`t", 3
+  if ($parts.Length -lt 3) { return }
+  $nextEp = ([int]$parts[0]) + 1
+  Set-Content -Path $histFile -Value ("{0}`t{1}`t{2}" -f $nextEp, $parts[1], $parts[2])
+}
+
+switch ($mode) {
+  "start_success" {
+    Add-Content -Path $histFile -Value "1`tshow-1`tShow One"
+    exit 0
+  }
+  "replay_success" { Bump-History; exit 0 }
+  "next_success" { Bump-History; exit 0 }
+  "previous_success" { Bump-History; exit 0 }
+  "select_success" {
+    $aniId = if ($env:ANITRACK_FAKE_ANI_ID) { $env:ANITRACK_FAKE_ANI_ID } else { "show-1" }
+    $title = if ($env:ANITRACK_FAKE_TITLE) { $env:ANITRACK_FAKE_TITLE } else { "Show One" }
+    $episode = if ($env:ANITRACK_FAKE_EPISODE) { $env:ANITRACK_FAKE_EPISODE } else { "2" }
+    Set-Content -Path $histFile -Value ("{0}`t{1}`t{2}" -f $episode, $aniId, $title)
+    exit 0
+  }
+  "next_fail" { exit 1 }
+  "previous_fail" { exit 1 }
+  default { exit 0 }
+}
+"#;
+    fs::write(&cmd_path, cmd_script).expect("fake ani-cli cmd wrapper should be written");
+    fs::write(&ps1_path, ps1_script).expect("fake ani-cli powershell should be written");
+    cmd_path
+}
+
+#[cfg(windows)]
+#[test]
+fn integration_start_records_watch_progress_with_fake_ani_cli_windows() {
+    let _env_guard = env_lock_guard();
+    let sandbox = TestSandbox::new("start-win");
+    let db = open_test_db(&sandbox.root);
+    let fake_ani_cli = create_fake_ani_cli(&sandbox.root);
+    let hist_dir = sandbox.root.join("hist");
+    fs::create_dir_all(&hist_dir).expect("hist directory should be created");
+
+    let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
+    let _hist = ScopedEnvVar::set("ANI_CLI_HIST_DIR", hist_dir.as_os_str());
+    let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("start_success"));
+
+    run_start(&db).expect("start command should succeed");
+
+    let last_seen = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should be recorded");
+    assert_eq!(last_seen.ani_id, "show-1");
+    assert_eq!(last_seen.title, "Show One");
+    assert_eq!(last_seen.last_episode, "1");
+}
+
+#[cfg(windows)]
+#[test]
+fn integration_next_updates_progress_when_fake_continue_succeeds_windows() {
+    let _env_guard = env_lock_guard();
+    let sandbox = TestSandbox::new("next-success-win");
+    let db = open_test_db(&sandbox.root);
+    let fake_ani_cli = create_fake_ani_cli(&sandbox.root);
+    db.upsert_seen("show-1", "Show One", "1")
+        .expect("seed row should be inserted");
+
+    let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
+    let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("next_success"));
+
+    run_next(&db).expect("next command should complete");
+
+    let last_seen = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should exist");
+    assert_eq!(last_seen.last_episode, "2");
 }

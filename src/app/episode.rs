@@ -100,10 +100,19 @@ pub(crate) fn choose_episode_labels_candidate(
     candidates.into_iter().max_by_key(|episodes| episodes.len())
 }
 
-pub(crate) fn fetch_episode_labels(ani_id: &str, total_hint: Option<u32>) -> Option<Vec<String>> {
+#[derive(Debug, Clone, Default)]
+pub(crate) struct EpisodeLabelFetchOutcome {
+    pub(crate) episode_list: Option<Vec<String>>,
+    pub(crate) warnings: Vec<String>,
+}
+
+pub(crate) fn fetch_episode_labels_with_diagnostics(
+    ani_id: &str,
+    total_hint: Option<u32>,
+) -> EpisodeLabelFetchOutcome {
     let query = "query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail }}";
     let variables = format!("{{\"showId\":\"{ani_id}\"}}");
-    let output = ProcessCommand::new("curl")
+    let output = match ProcessCommand::new("curl")
         .arg("-e")
         .arg("https://allanime.to")
         .arg("-sS")
@@ -122,13 +131,59 @@ pub(crate) fn fetch_episode_labels(ani_id: &str, total_hint: Option<u32>) -> Opt
         .arg("--data-urlencode")
         .arg(format!("query={query}"))
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(err) => {
+            return EpisodeLabelFetchOutcome {
+                episode_list: None,
+                warnings: vec![format!(
+                    "episode metadata request failed for {ani_id}: unable to spawn curl ({err})"
+                )],
+            };
+        }
+    };
     if !output.status.success() {
-        return None;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        let warning = if detail.is_empty() {
+            format!(
+                "episode metadata request failed for {ani_id}: curl exited with {}",
+                output.status
+            )
+        } else {
+            format!(
+                "episode metadata request failed for {ani_id}: curl exited with {} ({detail})",
+                output.status
+            )
+        };
+        return EpisodeLabelFetchOutcome {
+            episode_list: None,
+            warnings: vec![warning],
+        };
     }
 
-    let raw = String::from_utf8(output.stdout).ok()?;
-    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    let raw = match String::from_utf8(output.stdout) {
+        Ok(raw) => raw,
+        Err(err) => {
+            return EpisodeLabelFetchOutcome {
+                episode_list: None,
+                warnings: vec![format!(
+                    "episode metadata response decode failed for {ani_id}: {err}"
+                )],
+            };
+        }
+    };
+    let parsed: Value = match serde_json::from_str(&raw) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return EpisodeLabelFetchOutcome {
+                episode_list: None,
+                warnings: vec![format!(
+                    "episode metadata response parse failed for {ani_id}: {err}"
+                )],
+            };
+        }
+    };
     let mut candidates = Vec::new();
     if let Some(sub) = parse_mode_episode_labels_from_value(&parsed, "sub") {
         candidates.push(sub);
@@ -136,9 +191,19 @@ pub(crate) fn fetch_episode_labels(ani_id: &str, total_hint: Option<u32>) -> Opt
     if let Some(dub) = parse_mode_episode_labels_from_value(&parsed, "dub") {
         candidates.push(dub);
     }
-    let mut episodes = choose_episode_labels_candidate(candidates, total_hint)?;
+    let Some(mut episodes) = choose_episode_labels_candidate(candidates, total_hint) else {
+        return EpisodeLabelFetchOutcome {
+            episode_list: None,
+            warnings: vec![format!(
+                "episode metadata response for {ani_id} did not contain usable sub/dub episode labels"
+            )],
+        };
+    };
     episodes.sort_by(|left, right| compare_episode_labels(left, right));
-    Some(episodes)
+    EpisodeLabelFetchOutcome {
+        episode_list: Some(episodes),
+        warnings: Vec::new(),
+    }
 }
 
 pub(crate) fn replay_seed_episode(
