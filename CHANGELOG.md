@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refined HTTP retry behavior to retry only transient failures (transport, `408`, `429`, and `5xx`) and avoid retrying hard client errors like `400`/`404`.
 - TUI Selected panel now surfaces metadata lookup warnings for better runtime debuggability.
 - Improved playback failure messaging in CLI/TUI to include actionable `ani-cli` exit details (including a network/interruption hint for common failure exits).
+- Hardened SQLite migrations with `PRAGMA user_version` and explicit forward-only schema steps for safer upgrades across releases.
 - Expanded CI integration-harness coverage to `windows-latest` in addition to Linux/macOS.
 - Updated Windows platform status to experimental runtime support with integration-harness CI coverage.
 

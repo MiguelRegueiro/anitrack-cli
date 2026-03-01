@@ -1,9 +1,11 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use rusqlite::{Connection, params};
+
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Clone)]
 pub struct SeenEntry {
@@ -33,17 +35,58 @@ impl Database {
     }
 
     pub fn migrate(&self) -> Result<()> {
-        self.conn.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS seen_progress (
-                ani_id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                last_episode TEXT NOT NULL,
-                last_seen_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_seen_progress_seen_at ON seen_progress(last_seen_at DESC);
-            "#,
-        )?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .context("failed to start migration transaction")?;
+        let mut user_version: i64 = tx
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .context("failed reading sqlite user_version")?;
+
+        if user_version > SCHEMA_VERSION {
+            return Err(anyhow!(
+                "database schema version {user_version} is newer than supported {SCHEMA_VERSION}"
+            ));
+        }
+
+        while user_version < SCHEMA_VERSION {
+            let next_version = user_version + 1;
+            match next_version {
+                1 => {
+                    tx.execute_batch(
+                        r#"
+                        CREATE TABLE IF NOT EXISTS seen_progress (
+                            ani_id TEXT PRIMARY KEY,
+                            title TEXT NOT NULL,
+                            last_episode TEXT NOT NULL,
+                            last_seen_at TEXT NOT NULL
+                        );
+                        "#,
+                    )
+                    .context("failed applying migration v1")?;
+                }
+                2 => {
+                    tx.execute_batch(
+                        r#"
+                        CREATE INDEX IF NOT EXISTS idx_seen_progress_seen_at
+                        ON seen_progress(last_seen_at DESC);
+                        "#,
+                    )
+                    .context("failed applying migration v2")?;
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "missing migration for schema version {next_version}"
+                    ));
+                }
+            }
+
+            tx.pragma_update(None, "user_version", next_version)
+                .with_context(|| format!("failed setting sqlite user_version to {next_version}"))?;
+            user_version = next_version;
+        }
+
+        tx.commit().context("failed to commit migrations")?;
         Ok(())
     }
 
@@ -154,5 +197,138 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].ani_id, "show-2");
         assert_eq!(rows[1].ani_id, "show-1");
+    }
+
+    #[test]
+    fn migrate_sets_user_version_and_is_idempotent() {
+        let db = in_memory_db();
+
+        db.migrate().expect("first migration should succeed");
+        db.migrate().expect("second migration should be idempotent");
+
+        let user_version: i64 = db
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("user_version should be queryable");
+        assert_eq!(user_version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrate_upgrades_legacy_schema_without_user_version() {
+        let db = in_memory_db();
+        db.conn
+            .execute_batch(
+                r#"
+                CREATE TABLE seen_progress (
+                    ani_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    last_episode TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                );
+                INSERT INTO seen_progress (ani_id, title, last_episode, last_seen_at)
+                VALUES ('show-1', 'Show One', '1', '2026-03-01T00:00:00+00:00');
+                "#,
+            )
+            .expect("legacy schema should be created");
+
+        let before_version: i64 = db
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("legacy user_version should be queryable");
+        assert_eq!(before_version, 0);
+
+        db.migrate().expect("legacy schema should migrate");
+
+        let after_version: i64 = db
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("upgraded user_version should be queryable");
+        assert_eq!(after_version, SCHEMA_VERSION);
+
+        let index_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name='idx_seen_progress_seen_at'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("index lookup should succeed");
+        assert_eq!(index_count, 1);
+
+        let existing_row: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(1) FROM seen_progress WHERE ani_id='show-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy row should survive migration");
+        assert_eq!(existing_row, 1);
+    }
+
+    #[test]
+    fn migrate_upgrades_from_v1_to_latest() {
+        let db = in_memory_db();
+        db.conn
+            .execute_batch(
+                r#"
+                CREATE TABLE seen_progress (
+                    ani_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    last_episode TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL
+                );
+                INSERT INTO seen_progress (ani_id, title, last_episode, last_seen_at)
+                VALUES ('show-2', 'Show Two', '3', '2026-03-01T00:00:00+00:00');
+                "#,
+            )
+            .expect("v1 schema should be created");
+        db.conn
+            .pragma_update(None, "user_version", 1)
+            .expect("v1 user_version should be set");
+
+        db.migrate().expect("v1 schema should migrate to latest");
+
+        let after_version: i64 = db
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("upgraded user_version should be queryable");
+        assert_eq!(after_version, SCHEMA_VERSION);
+
+        let index_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name='idx_seen_progress_seen_at'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("index lookup should succeed");
+        assert_eq!(index_count, 1);
+
+        let existing_row: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(1) FROM seen_progress WHERE ani_id='show-2'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("v1 row should survive migration");
+        assert_eq!(existing_row, 1);
+    }
+
+    #[test]
+    fn migrate_rejects_future_schema_versions() {
+        let db = in_memory_db();
+        db.conn
+            .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+            .expect("should set future user_version");
+
+        let err = db
+            .migrate()
+            .expect_err("future schema version should be rejected");
+        assert!(
+            err.to_string().contains("newer than supported"),
+            "unexpected error: {err}"
+        );
     }
 }
