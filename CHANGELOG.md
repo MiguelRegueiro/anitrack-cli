@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refined README information architecture for end users and moved advanced usage/runtime details into `docs/usage.md`.
 - Refactored large runtime modules into focused submodules (`src/app/tracking/` and `src/app/tui/`) to improve maintainability and reviewability.
 - Improved diagnostics for episode metadata and show search lookups so external/API failures produce explicit warnings instead of silent `None` fallbacks.
+- Replaced metadata/search `curl` subprocess calls with native HTTP requests using `ureq`, preserving retry/timeout behavior while improving portability.
 - TUI Selected panel now surfaces metadata lookup warnings for better runtime debuggability.
 - Expanded CI integration-harness coverage to `windows-latest` in addition to Linux/macOS.
 - Updated Windows platform status to experimental runtime support with integration-harness CI coverage.

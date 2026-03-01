@@ -19,7 +19,6 @@ It does not replace `ani-cli`; it orchestrates and extends that workflow.
 
 ## Requirements
 - `ani-cli` installed and available on your `PATH`
-- `curl` available on your `PATH` (used for episode/search metadata lookups)
 - Linux-only optional enhancement: `journalctl` (used as a fallback signal when history content is unchanged)
 - For macOS dependency setup (`curl`, `grep`, `aria2`, `ffmpeg`, `git`, `fzf`, `yt-dlp`, and player integration), follow the upstream `ani-cli` install guidance: <https://github.com/pystardust/ani-cli>
 

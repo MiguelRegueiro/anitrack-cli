@@ -1,8 +1,10 @@
 use std::cmp::Ordering;
-use std::process::Command as ProcessCommand;
+use std::time::Duration;
 
 use chrono::{DateTime, Local};
 use serde_json::Value;
+
+use crate::http::get_text_with_retries;
 
 pub(crate) fn parse_title_and_total_eps(title: &str) -> (String, Option<u32>) {
     let trimmed = title.trim();
@@ -112,67 +114,29 @@ pub(crate) fn fetch_episode_labels_with_diagnostics(
 ) -> EpisodeLabelFetchOutcome {
     let query = "query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail }}";
     let variables = format!("{{\"showId\":\"{ani_id}\"}}");
-    let output = match ProcessCommand::new("curl")
-        .arg("-e")
-        .arg("https://allanime.to")
-        .arg("-sS")
-        .arg("--retry")
-        .arg("2")
-        .arg("--retry-delay")
-        .arg("1")
-        .arg("--connect-timeout")
-        .arg("3")
-        .arg("--max-time")
-        .arg("5")
-        .arg("-G")
-        .arg("https://api.allanime.day/api")
-        .arg("--data-urlencode")
-        .arg(format!("variables={variables}"))
-        .arg("--data-urlencode")
-        .arg(format!("query={query}"))
-        .output()
-    {
-        Ok(output) => output,
-        Err(err) => {
-            return EpisodeLabelFetchOutcome {
-                episode_list: None,
-                warnings: vec![format!(
-                    "episode metadata request failed for {ani_id}: unable to spawn curl ({err})"
-                )],
-            };
-        }
-    };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr.trim();
-        let warning = if detail.is_empty() {
-            format!(
-                "episode metadata request failed for {ani_id}: curl exited with {}",
-                output.status
-            )
-        } else {
-            format!(
-                "episode metadata request failed for {ani_id}: curl exited with {} ({detail})",
-                output.status
-            )
-        };
-        return EpisodeLabelFetchOutcome {
-            episode_list: None,
-            warnings: vec![warning],
-        };
-    }
-
-    let raw = match String::from_utf8(output.stdout) {
+    let query_params = vec![
+        ("variables".to_string(), variables),
+        ("query".to_string(), query.to_string()),
+    ];
+    let raw = match get_text_with_retries(
+        "https://api.allanime.day/api",
+        "https://allanime.to",
+        &query_params,
+        Duration::from_secs(3),
+        Duration::from_secs(5),
+        3,
+        Duration::from_secs(1),
+    ) {
         Ok(raw) => raw,
         Err(err) => {
+            let warning = format!("episode metadata request failed for {ani_id}: {err}");
             return EpisodeLabelFetchOutcome {
                 episode_list: None,
-                warnings: vec![format!(
-                    "episode metadata response decode failed for {ani_id}: {err}"
-                )],
+                warnings: vec![warning],
             };
         }
     };
+
     let parsed: Value = match serde_json::from_str(&raw) {
         Ok(parsed) => parsed,
         Err(err) => {
@@ -184,6 +148,7 @@ pub(crate) fn fetch_episode_labels_with_diagnostics(
             };
         }
     };
+
     let mut candidates = Vec::new();
     if let Some(sub) = parse_mode_episode_labels_from_value(&parsed, "sub") {
         candidates.push(sub);
