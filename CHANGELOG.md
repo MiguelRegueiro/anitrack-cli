@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-03-01
+
 ### Changed
 - Displayed `Last Seen` timestamps now render in the user's local timezone while DB storage remains UTC.
 - `anitrack list` displays local time with UTC offset; TUI displays compact local time without offset.
@@ -156,7 +158,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Right-side episode text now matches progress logic.
 - Polished modal styling/layout for delete confirmation and last-episode notice.
 
-[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.3...v0.1.4
