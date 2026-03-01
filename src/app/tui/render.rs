@@ -147,6 +147,10 @@ pub(super) fn draw_tui(
             if episode_state.is_some_and(EpisodeListState::is_loading) {
                 selection_text.push_str("\n\nEpisodes\nLoading...");
             }
+            if let Some(warning) = episode_state.and_then(EpisodeListState::warning) {
+                selection_text.push_str("\n\nMetadata warning\n");
+                selection_text.push_str(&truncate(warning, 90));
+            }
             (selection_text, gauge)
         }
         None => (

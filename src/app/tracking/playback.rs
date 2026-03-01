@@ -8,10 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow};
 
 use super::super::episode::{
-    fetch_episode_labels, parse_title_and_total_eps, previous_seed_episode,
+    fetch_episode_labels_with_diagnostics, parse_title_and_total_eps, previous_seed_episode,
     previous_target_episode, replay_seed_episode, sanitize_title_for_search,
 };
-use super::api::resolve_select_nth_for_item;
+use super::api::resolve_select_nth_for_item_with_diagnostics;
 use super::history::{
     ani_cli_histfile, append_history_warnings, detect_latest_watch_event,
     detect_latest_watch_event_from_logs, history_file_touched, read_hist_map, read_histfile_sig,
@@ -20,6 +20,12 @@ use super::history::{
 use super::process::{run_interactive_cmd, with_sigint_ignored};
 use super::{PlaybackOutcome, ReplayPlan};
 use crate::db::{Database, SeenEntry};
+
+fn emit_warnings(warnings: &[String]) {
+    for warning in warnings {
+        eprintln!("Warning: {warning}");
+    }
+}
 
 pub(crate) fn run_ani_cli_search(db: &Database) -> Result<(String, Option<String>)> {
     let histfile = ani_cli_histfile();
@@ -216,8 +222,16 @@ pub(crate) fn run_ani_cli_select(item: &SeenEntry) -> Result<PlaybackOutcome> {
         eprintln!("Warning: {warning}");
     }
     let before = before_read.entries;
-    let select_nth = resolve_select_nth_for_item(item)
-        .ok_or_else(|| anyhow!("failed to resolve current show for episode selection"))?;
+    let resolution = resolve_select_nth_for_item_with_diagnostics(item);
+    emit_warnings(&resolution.warnings);
+    let select_nth = resolution.index.ok_or_else(|| {
+        let mut message = "failed to resolve current show for episode selection".to_string();
+        for warning in resolution.warnings {
+            message.push_str("\nWarning: ");
+            message.push_str(&warning);
+        }
+        anyhow!(message)
+    })?;
     let success = run_ani_cli_title(&sanitize_title_for_search(&item.title), Some(select_nth))?;
     let final_episode = if success {
         let after_read = read_hist_map(&histfile);
@@ -248,13 +262,21 @@ pub(crate) fn run_ani_cli_replay(
         episode_list.is_none() && replay_seed_episode(&item.last_episode, None).is_none();
     let fetched_episodes = if should_fetch_episodes {
         let total_hint = parse_title_and_total_eps(&item.title).1;
-        fetch_episode_labels(&item.ani_id, total_hint)
+        let outcome = fetch_episode_labels_with_diagnostics(&item.ani_id, total_hint);
+        emit_warnings(&outcome.warnings);
+        outcome.episode_list
     } else {
         None
     };
     let resolved_episode_list = episode_list.or(fetched_episodes.as_deref());
 
-    let plan = build_replay_plan(item, resolved_episode_list, resolve_select_nth_for_item);
+    let mut select_warnings = Vec::new();
+    let plan = build_replay_plan(item, resolved_episode_list, |current_item| {
+        let resolution = resolve_select_nth_for_item_with_diagnostics(current_item);
+        select_warnings = resolution.warnings;
+        resolution.index
+    });
+    emit_warnings(&select_warnings);
     match plan {
         ReplayPlan::Continue { seed_episode } => run_ani_cli_continue(item, &seed_episode),
         ReplayPlan::Episode {
@@ -292,7 +314,9 @@ pub(crate) fn run_ani_cli_previous(
         episode_list
     } else {
         let total_hint = parse_title_and_total_eps(&item.title).1;
-        fetched_episodes = fetch_episode_labels(&item.ani_id, total_hint);
+        let outcome = fetch_episode_labels_with_diagnostics(&item.ani_id, total_hint);
+        emit_warnings(&outcome.warnings);
+        fetched_episodes = outcome.episode_list;
         fetched_episodes.as_deref()
     };
 
@@ -301,8 +325,16 @@ pub(crate) fn run_ani_cli_previous(
     if let Some(seed_episode) = previous_seed_episode(&item.last_episode, resolved_episode_list) {
         run_ani_cli_continue(item, &seed_episode)
     } else {
-        let select_nth = resolve_select_nth_for_item(item)
-            .ok_or_else(|| anyhow!("failed to resolve current show for previous action"))?;
+        let resolution = resolve_select_nth_for_item_with_diagnostics(item);
+        emit_warnings(&resolution.warnings);
+        let select_nth = resolution.index.ok_or_else(|| {
+            let mut message = "failed to resolve current show for previous action".to_string();
+            for warning in resolution.warnings {
+                message.push_str("\nWarning: ");
+                message.push_str(&warning);
+            }
+            anyhow!(message)
+        })?;
         run_ani_cli_episode_with_global_tracking(item, &target_episode, Some(select_nth))
     }
 }

@@ -6,7 +6,7 @@ use ratatui::widgets::TableState;
 
 use crate::db::{Database, SeenEntry};
 
-use super::super::episode::{fetch_episode_labels, parse_title_and_total_eps};
+use super::super::episode::{fetch_episode_labels_with_diagnostics, parse_title_and_total_eps};
 use super::super::tracking::{
     run_ani_cli_continue, run_ani_cli_previous, run_ani_cli_replay, run_ani_cli_select,
 };
@@ -137,10 +137,12 @@ pub(super) fn ensure_selected_episode_list(
     let total_hint = parse_title_and_total_eps(&item.title).1;
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let episode_list = fetch_episode_labels(&ani_id, total_hint);
+        let outcome = fetch_episode_labels_with_diagnostics(&ani_id, total_hint);
+        let warning = (!outcome.warnings.is_empty()).then(|| outcome.warnings.join(" | "));
         let _ = tx.send(EpisodeListFetchResult {
             ani_id,
-            episode_list,
+            episode_list: outcome.episode_list,
+            warning,
         });
     });
 }
@@ -150,6 +152,12 @@ pub(super) fn drain_episode_fetch_results(
     episode_lists_by_id: &mut HashMap<String, EpisodeListState>,
 ) {
     while let Ok(result) = rx.try_recv() {
-        episode_lists_by_id.insert(result.ani_id, EpisodeListState::Ready(result.episode_list));
+        episode_lists_by_id.insert(
+            result.ani_id,
+            EpisodeListState::Ready {
+                episode_list: result.episode_list,
+                warning: result.warning,
+            },
+        );
     }
 }

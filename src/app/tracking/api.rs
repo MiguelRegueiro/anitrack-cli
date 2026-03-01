@@ -6,10 +6,27 @@ use serde_json::Value;
 use super::super::episode::{parse_title_and_total_eps, sanitize_title_for_search};
 use crate::db::SeenEntry;
 
-pub(crate) fn resolve_select_nth_for_item(item: &SeenEntry) -> Option<u32> {
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SelectNthResolution {
+    pub(crate) index: Option<u32>,
+    pub(crate) warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SearchEntriesFetchOutcome {
+    pub(crate) entries: Option<Vec<SearchResultEntry>>,
+    pub(crate) warning: Option<String>,
+}
+
+pub(crate) fn resolve_select_nth_for_item_with_diagnostics(
+    item: &SeenEntry,
+) -> SelectNthResolution {
     #[cfg(test)]
     if let Some(override_index) = resolve_select_nth_test_override() {
-        return Some(override_index);
+        return SelectNthResolution {
+            index: Some(override_index),
+            warnings: Vec::new(),
+        };
     }
 
     let cleaned_title = sanitize_title_for_search(&item.title);
@@ -23,21 +40,35 @@ pub(crate) fn resolve_select_nth_for_item(item: &SeenEntry) -> Option<u32> {
     let env_mode = env::var("ANI_CLI_MODE").unwrap_or_else(|_| "sub".to_string());
     let mut modes = vec![env_mode, "sub".to_string(), "dub".to_string()];
     modes.dedup();
+    let mut warnings = Vec::new();
 
     for query in queries {
         for mode in &modes {
-            let Some(entries) = fetch_search_result_entries(&query, mode) else {
+            let fetch_outcome = fetch_search_result_entries_with_diagnostics(&query, mode);
+            if let Some(warning) = fetch_outcome.warning {
+                warnings.push(warning);
+            }
+            let Some(entries) = fetch_outcome.entries else {
                 continue;
             };
             if let Some(index) = find_select_nth_index_by_id(&entries, &item.ani_id) {
-                return Some(index);
+                return SelectNthResolution {
+                    index: Some(index),
+                    warnings,
+                };
             }
             if let Some(index) = find_select_nth_index_by_title(&entries, &item.title) {
-                return Some(index);
+                return SelectNthResolution {
+                    index: Some(index),
+                    warnings,
+                };
             }
         }
     }
-    None
+    SelectNthResolution {
+        index: None,
+        warnings,
+    }
 }
 
 #[cfg(test)]
@@ -47,17 +78,17 @@ fn resolve_select_nth_test_override() -> Option<u32> {
     (parsed > 0).then_some(parsed)
 }
 
-pub(crate) fn fetch_search_result_entries(
+pub(crate) fn fetch_search_result_entries_with_diagnostics(
     query: &str,
     mode: &str,
-) -> Option<Vec<SearchResultEntry>> {
+) -> SearchEntriesFetchOutcome {
     let gql = "query( $search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType ) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } }}";
     let escaped_query = json_escape(query);
     let escaped_mode = json_escape(mode);
     let variables = format!(
         "{{\"search\":{{\"allowAdult\":false,\"allowUnknown\":false,\"query\":\"{escaped_query}\"}},\"limit\":40,\"page\":1,\"translationType\":\"{escaped_mode}\",\"countryOrigin\":\"ALL\"}}"
     );
-    let output = ProcessCommand::new("curl")
+    let output = match ProcessCommand::new("curl")
         .arg("-e")
         .arg("https://allmanga.to")
         .arg("-sS")
@@ -76,17 +107,59 @@ pub(crate) fn fetch_search_result_entries(
         .arg("--data-urlencode")
         .arg(format!("query={gql}"))
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(err) => {
+            return SearchEntriesFetchOutcome {
+                entries: None,
+                warning: Some(format!(
+                    "show search request failed for query={query:?} mode={mode}: unable to spawn curl ({err})"
+                )),
+            };
+        }
+    };
     if !output.status.success() {
-        return None;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        let warning = if detail.is_empty() {
+            format!(
+                "show search request failed for query={query:?} mode={mode}: curl exited with {}",
+                output.status
+            )
+        } else {
+            format!(
+                "show search request failed for query={query:?} mode={mode}: curl exited with {} ({detail})",
+                output.status
+            )
+        };
+        return SearchEntriesFetchOutcome {
+            entries: None,
+            warning: Some(warning),
+        };
     }
 
-    let raw = String::from_utf8(output.stdout).ok()?;
+    let raw = match String::from_utf8(output.stdout) {
+        Ok(raw) => raw,
+        Err(err) => {
+            return SearchEntriesFetchOutcome {
+                entries: None,
+                warning: Some(format!(
+                    "show search response decode failed for query={query:?} mode={mode}: {err}"
+                )),
+            };
+        }
+    };
     let entries = parse_search_result_entries(&raw);
     if entries.is_empty() {
-        None
+        SearchEntriesFetchOutcome {
+            entries: None,
+            warning: None,
+        }
     } else {
-        Some(entries)
+        SearchEntriesFetchOutcome {
+            entries: Some(entries),
+            warning: None,
+        }
     }
 }
 

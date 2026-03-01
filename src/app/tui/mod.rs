@@ -77,24 +77,44 @@ pub(super) struct PendingNotice {
 pub(super) struct EpisodeListFetchResult {
     pub(super) ani_id: String,
     pub(super) episode_list: Option<Vec<String>>,
+    pub(super) warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) enum EpisodeListState {
     Loading,
-    Ready(Option<Vec<String>>),
+    Ready {
+        episode_list: Option<Vec<String>>,
+        warning: Option<String>,
+    },
 }
 
 impl EpisodeListState {
     pub(super) fn episode_list(&self) -> Option<&[String]> {
         match self {
-            Self::Ready(Some(episodes)) => Some(episodes.as_slice()),
-            Self::Loading | Self::Ready(None) => None,
+            Self::Ready {
+                episode_list: Some(episodes),
+                ..
+            } => Some(episodes.as_slice()),
+            Self::Loading
+            | Self::Ready {
+                episode_list: None, ..
+            } => None,
         }
     }
 
     pub(super) fn is_loading(&self) -> bool {
         matches!(self, Self::Loading)
+    }
+
+    pub(super) fn warning(&self) -> Option<&str> {
+        match self {
+            Self::Ready {
+                warning: Some(warning),
+                ..
+            } => Some(warning.as_str()),
+            _ => None,
+        }
     }
 }
 
