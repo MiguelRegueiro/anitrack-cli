@@ -56,7 +56,7 @@ fn run_next(db: &Database) -> Result<()> {
                 db.upsert_seen(&item.ani_id, &item.title, &updated_ep)?;
                 println!("Updated progress: {} -> episode {}", item.title, updated_ep);
             } else {
-                println!("Playback failed/interrupted. Progress not updated.");
+                println!("{}", playback_failure_message(&outcome));
             }
         }
         None => println!("No last seen entry yet. Run `anitrack start` first."),
@@ -90,7 +90,7 @@ fn run_replay(db: &Database) -> Result<()> {
                     item.title, updated_ep
                 );
             } else {
-                println!("Playback failed/interrupted. Progress not updated.");
+                println!("{}", playback_failure_message(&outcome));
             }
         }
         None => println!("No last seen entry yet. Run `anitrack start` first."),
@@ -126,4 +126,11 @@ fn open_db() -> Result<Database> {
     let db = Database::open(&db_path)?;
     db.migrate()?;
     Ok(db)
+}
+
+fn playback_failure_message(outcome: &tracking::PlaybackOutcome) -> String {
+    match outcome.failure_detail.as_deref() {
+        Some(detail) => format!("Playback failed/interrupted: {detail}. Progress not updated."),
+        None => "Playback failed/interrupted. Progress not updated.".to_string(),
+    }
 }

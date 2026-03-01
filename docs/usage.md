@@ -66,5 +66,6 @@ AniTrack also accepts space-separated history lines when tabs are not present:
 - TUI/start sync only records entries tied to the current run and does not backfill arbitrary old history rows, so deleted DB entries are not resurrected unless watched again.
 - The `journalctl` log-fallback path is Linux-only; on non-Linux systems AniTrack skips that fallback and relies on history-based detection.
 - Metadata/search API calls use short retries for transient network failures.
+- AniTrack performs metadata/search HTTP requests natively and no longer requires a separate `curl` binary.
 - Metadata/search lookup failures are surfaced as warnings (instead of silent fallback), including in the TUI Selected panel metadata area.
 - CI runs integration-harness tests on Linux, macOS, and Windows (`integration_` test subset).

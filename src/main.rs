@@ -1,6 +1,7 @@
 mod app;
 mod cli;
 mod db;
+mod http;
 mod paths;
 
 use anyhow::Result;

@@ -1,10 +1,11 @@
 use std::env;
-use std::process::Command as ProcessCommand;
+use std::time::Duration;
 
 use serde_json::Value;
 
 use super::super::episode::{parse_title_and_total_eps, sanitize_title_for_search};
 use crate::db::SeenEntry;
+use crate::http::get_text_with_retries;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SelectNthResolution {
@@ -88,78 +89,41 @@ pub(crate) fn fetch_search_result_entries_with_diagnostics(
     let variables = format!(
         "{{\"search\":{{\"allowAdult\":false,\"allowUnknown\":false,\"query\":\"{escaped_query}\"}},\"limit\":40,\"page\":1,\"translationType\":\"{escaped_mode}\",\"countryOrigin\":\"ALL\"}}"
     );
-    let output = match ProcessCommand::new("curl")
-        .arg("-e")
-        .arg("https://allmanga.to")
-        .arg("-sS")
-        .arg("--retry")
-        .arg("2")
-        .arg("--retry-delay")
-        .arg("1")
-        .arg("--connect-timeout")
-        .arg("3")
-        .arg("--max-time")
-        .arg("6")
-        .arg("-G")
-        .arg("https://api.allanime.day/api")
-        .arg("--data-urlencode")
-        .arg(format!("variables={variables}"))
-        .arg("--data-urlencode")
-        .arg(format!("query={gql}"))
-        .output()
-    {
-        Ok(output) => output,
+    let query_params = vec![
+        ("variables".to_string(), variables),
+        ("query".to_string(), gql.to_string()),
+    ];
+    let raw = match get_text_with_retries(
+        "https://api.allanime.day/api",
+        "https://allmanga.to",
+        &query_params,
+        Duration::from_secs(3),
+        Duration::from_secs(6),
+        3,
+        Duration::from_secs(1),
+    ) {
+        Ok(raw) => raw,
         Err(err) => {
+            let warning =
+                format!("show search request failed for query={query:?} mode={mode}: {err}");
             return SearchEntriesFetchOutcome {
                 entries: None,
-                warning: Some(format!(
-                    "show search request failed for query={query:?} mode={mode}: unable to spawn curl ({err})"
-                )),
+                warning: Some(warning),
             };
         }
     };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr.trim();
-        let warning = if detail.is_empty() {
-            format!(
-                "show search request failed for query={query:?} mode={mode}: curl exited with {}",
-                output.status
-            )
-        } else {
-            format!(
-                "show search request failed for query={query:?} mode={mode}: curl exited with {} ({detail})",
-                output.status
-            )
-        };
+
+    let entries = parse_search_result_entries(&raw);
+    if entries.is_empty() {
         return SearchEntriesFetchOutcome {
             entries: None,
-            warning: Some(warning),
+            warning: None,
         };
     }
 
-    let raw = match String::from_utf8(output.stdout) {
-        Ok(raw) => raw,
-        Err(err) => {
-            return SearchEntriesFetchOutcome {
-                entries: None,
-                warning: Some(format!(
-                    "show search response decode failed for query={query:?} mode={mode}: {err}"
-                )),
-            };
-        }
-    };
-    let entries = parse_search_result_entries(&raw);
-    if entries.is_empty() {
-        SearchEntriesFetchOutcome {
-            entries: None,
-            warning: None,
-        }
-    } else {
-        SearchEntriesFetchOutcome {
-            entries: Some(entries),
-            warning: None,
-        }
+    SearchEntriesFetchOutcome {
+        entries: Some(entries),
+        warning: None,
     }
 }
 

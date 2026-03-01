@@ -2,10 +2,13 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 
 use super::super::episode::{
     fetch_episode_labels_with_diagnostics, parse_title_and_total_eps, previous_seed_episode,
@@ -24,6 +27,31 @@ use crate::db::{Database, SeenEntry};
 fn emit_warnings(warnings: &[String]) {
     for warning in warnings {
         eprintln!("Warning: {warning}");
+    }
+}
+
+fn playback_failure_detail(status: &ExitStatus) -> String {
+    let base = if let Some(code) = status.code() {
+        format!("ani-cli exited with code {code}")
+    } else {
+        #[cfg(unix)]
+        {
+            if let Some(signal) = status.signal() {
+                format!("ani-cli terminated by signal {signal}")
+            } else {
+                format!("ani-cli exited with status {status}")
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            format!("ani-cli exited with status {status}")
+        }
+    };
+
+    if status.code() == Some(1) {
+        format!("{base}; possible network outage or interrupted playback")
+    } else {
+        base
     }
 }
 
@@ -129,7 +157,8 @@ pub(crate) fn run_ani_cli_continue(
         .stderr(Stdio::inherit())
         .status()
         .with_context(|| format!("failed to launch {}", ani_cli_bin.display()))?;
-    let final_episode = if status.success() {
+    let success = status.success();
+    let final_episode = if success {
         let hist_read = read_hist_map(&histfile);
         for warning in hist_read.warnings {
             eprintln!("Warning: {warning}");
@@ -143,8 +172,9 @@ pub(crate) fn run_ani_cli_continue(
     };
 
     Ok(PlaybackOutcome {
-        success: status.success(),
+        success,
         final_episode,
+        failure_detail: (!success).then(|| playback_failure_detail(&status)),
     })
 }
 
@@ -152,7 +182,7 @@ pub(crate) fn run_ani_cli_episode(
     title: &str,
     select_nth: Option<u32>,
     episode: &str,
-) -> Result<bool> {
+) -> Result<ExitStatus> {
     let ani_cli_bin = resolve_ani_cli_bin();
     let mut cmd = ProcessCommand::new(&ani_cli_bin);
     if let Some(index) = select_nth {
@@ -167,10 +197,10 @@ pub(crate) fn run_ani_cli_episode(
         .stderr(Stdio::inherit())
         .status()
         .with_context(|| format!("failed to launch {}", ani_cli_bin.display()))?;
-    Ok(status.success())
+    Ok(status)
 }
 
-pub(crate) fn run_ani_cli_title(title: &str, select_nth: Option<u32>) -> Result<bool> {
+pub(crate) fn run_ani_cli_title(title: &str, select_nth: Option<u32>) -> Result<ExitStatus> {
     let ani_cli_bin = resolve_ani_cli_bin();
     let mut cmd = ProcessCommand::new(&ani_cli_bin);
     if let Some(index) = select_nth {
@@ -183,7 +213,7 @@ pub(crate) fn run_ani_cli_title(title: &str, select_nth: Option<u32>) -> Result<
         .stderr(Stdio::inherit())
         .status()
         .with_context(|| format!("failed to launch {}", ani_cli_bin.display()))?;
-    Ok(status.success())
+    Ok(status)
 }
 
 pub(crate) fn run_ani_cli_episode_with_global_tracking(
@@ -197,8 +227,8 @@ pub(crate) fn run_ani_cli_episode_with_global_tracking(
         eprintln!("Warning: {warning}");
     }
     let before = before_read.entries;
-    let success =
-        run_ani_cli_episode(&sanitize_title_for_search(&item.title), select_nth, episode)?;
+    let status = run_ani_cli_episode(&sanitize_title_for_search(&item.title), select_nth, episode)?;
+    let success = status.success();
     let final_episode = if success {
         let after_read = read_hist_map(&histfile);
         for warning in after_read.warnings {
@@ -216,6 +246,7 @@ pub(crate) fn run_ani_cli_episode_with_global_tracking(
     Ok(PlaybackOutcome {
         success,
         final_episode,
+        failure_detail: (!success).then(|| playback_failure_detail(&status)),
     })
 }
 
@@ -236,7 +267,8 @@ pub(crate) fn run_ani_cli_select(item: &SeenEntry) -> Result<PlaybackOutcome> {
         }
         anyhow!(message)
     })?;
-    let success = run_ani_cli_title(&sanitize_title_for_search(&item.title), Some(select_nth))?;
+    let status = run_ani_cli_title(&sanitize_title_for_search(&item.title), Some(select_nth))?;
+    let success = status.success();
     let final_episode = if success {
         let after_read = read_hist_map(&histfile);
         for warning in after_read.warnings {
@@ -254,6 +286,7 @@ pub(crate) fn run_ani_cli_select(item: &SeenEntry) -> Result<PlaybackOutcome> {
     Ok(PlaybackOutcome {
         success,
         final_episode,
+        failure_detail: (!success).then(|| playback_failure_detail(&status)),
     })
 }
 

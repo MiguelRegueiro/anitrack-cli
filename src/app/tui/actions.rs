@@ -8,7 +8,8 @@ use crate::db::{Database, SeenEntry};
 
 use super::super::episode::{fetch_episode_labels_with_diagnostics, parse_title_and_total_eps};
 use super::super::tracking::{
-    run_ani_cli_continue, run_ani_cli_previous, run_ani_cli_replay, run_ani_cli_select,
+    PlaybackOutcome, run_ani_cli_continue, run_ani_cli_previous, run_ani_cli_replay,
+    run_ani_cli_select,
 };
 use super::{EpisodeListFetchResult, EpisodeListState, TuiAction};
 
@@ -46,6 +47,13 @@ pub(super) fn status_error(msg: &str) -> String {
     format!("ERROR: {msg}")
 }
 
+fn playback_failure_message(outcome: &PlaybackOutcome) -> String {
+    match outcome.failure_detail.as_deref() {
+        Some(detail) => format!("Playback failed/interrupted: {detail}. Progress not updated."),
+        None => "Playback failed/interrupted. Progress not updated.".to_string(),
+    }
+}
+
 pub(super) fn run_selected_action(
     db: &Database,
     item: &SeenEntry,
@@ -65,7 +73,7 @@ pub(super) fn run_selected_action(
                     item.title, updated_ep
                 ))
             } else {
-                Ok("Playback failed/interrupted. Progress not updated.".to_string())
+                Ok(playback_failure_message(&outcome))
             }
         }
         TuiAction::Replay => {
@@ -80,7 +88,7 @@ pub(super) fn run_selected_action(
                     item.title, updated_ep
                 ))
             } else {
-                Ok("Playback failed/interrupted. Progress not updated.".to_string())
+                Ok(playback_failure_message(&outcome))
             }
         }
         TuiAction::Previous => {
@@ -95,7 +103,7 @@ pub(super) fn run_selected_action(
                     item.title, updated_ep
                 ))
             } else {
-                Ok("Playback failed/interrupted. Progress not updated.".to_string())
+                Ok(playback_failure_message(&outcome))
             }
         }
         TuiAction::Select => {
@@ -110,7 +118,7 @@ pub(super) fn run_selected_action(
                     item.title, updated_ep
                 ))
             } else {
-                Ok("Playback failed/interrupted. Progress not updated.".to_string())
+                Ok(playback_failure_message(&outcome))
             }
         }
     }

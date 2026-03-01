@@ -976,6 +976,15 @@ fn integration_previous_keeps_progress_when_playback_fails() {
     let outcome = run_ani_cli_previous(&item, Some(&episodes)).expect("previous action should run");
     assert!(!outcome.success, "previous action should report failure");
     assert!(outcome.final_episode.is_none());
+    assert!(
+        outcome
+            .failure_detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("possible network outage or interrupted playback"),
+        "failure detail should include actionable hint: {:?}",
+        outcome.failure_detail
+    );
 
     let last_seen = db
         .last_seen()
@@ -1081,4 +1090,42 @@ fn integration_next_updates_progress_when_fake_continue_succeeds_windows() {
         .expect("db query should succeed")
         .expect("entry should exist");
     assert_eq!(last_seen.last_episode, "2");
+}
+
+#[cfg(windows)]
+#[test]
+fn integration_previous_reports_failure_detail_when_playback_fails_windows() {
+    let _env_guard = env_lock_guard();
+    let sandbox = TestSandbox::new("previous-fail-win");
+    let db = open_test_db(&sandbox.root);
+    let fake_ani_cli = create_fake_ani_cli(&sandbox.root);
+    db.upsert_seen("show-1", "Show One", "3")
+        .expect("seed row should be inserted");
+    let item = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should exist");
+    let episodes = vec!["1".to_string(), "2".to_string(), "3".to_string()];
+
+    let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
+    let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("previous_fail"));
+
+    let outcome = run_ani_cli_previous(&item, Some(&episodes)).expect("previous action should run");
+    assert!(!outcome.success, "previous action should report failure");
+    assert!(outcome.final_episode.is_none());
+    assert!(
+        outcome
+            .failure_detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("possible network outage or interrupted playback"),
+        "failure detail should include actionable hint: {:?}",
+        outcome.failure_detail
+    );
+
+    let last_seen = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should exist");
+    assert_eq!(last_seen.last_episode, "3");
 }
