@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Unified `playback_failure_message` into a single definition in the tracking module, eliminating a silent divergence risk between CLI and TUI code paths.
+- Extracted `run_with_global_tracking` helper in the playback module, collapsing duplicated before/after history-read logic in `run_ani_cli_episode_with_global_tracking` and `run_ani_cli_select`.
+- Extracted `apply_outcome` helper in the TUI actions module, collapsing four identical outcome-handling arms in `run_selected_action`.
+- Replaced manual warning-printing loops in `playback.rs` with consistent `emit_warnings` calls.
+- Clarified why `run_ani_cli_continue` uses plain `.status()` instead of `run_interactive_cmd` with an inline comment.
+- Simplified the uninitialized binding pattern in `run_ani_cli_previous` to a straightforward always-initialized `let`.
+- Bumped `actions/checkout` from `v4` to `v5` in CI workflows to silence Node.js 20 deprecation warnings.
+
 ## [0.1.7] - 2026-03-01
 
 ### Changed
