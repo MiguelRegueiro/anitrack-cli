@@ -29,6 +29,13 @@ pub(crate) struct PlaybackOutcome {
     pub(crate) failure_detail: Option<String>,
 }
 
+pub(crate) fn playback_failure_message(outcome: &PlaybackOutcome) -> String {
+    match outcome.failure_detail.as_deref() {
+        Some(detail) => format!("Playback failed/interrupted: {detail}. Progress not updated."),
+        None => "Playback failed/interrupted. Progress not updated.".to_string(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReplayPlan {
     Continue {

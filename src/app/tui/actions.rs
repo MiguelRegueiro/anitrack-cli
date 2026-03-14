@@ -8,8 +8,8 @@ use crate::db::{Database, SeenEntry};
 
 use super::super::episode::{fetch_episode_labels_with_diagnostics, parse_title_and_total_eps};
 use super::super::tracking::{
-    PlaybackOutcome, run_ani_cli_continue, run_ani_cli_previous, run_ani_cli_replay,
-    run_ani_cli_select,
+    PlaybackOutcome, playback_failure_message, run_ani_cli_continue, run_ani_cli_previous,
+    run_ani_cli_replay, run_ani_cli_select,
 };
 use super::{EpisodeListFetchResult, EpisodeListState, TuiAction};
 
@@ -47,10 +47,20 @@ pub(super) fn status_error(msg: &str) -> String {
     format!("ERROR: {msg}")
 }
 
-fn playback_failure_message(outcome: &PlaybackOutcome) -> String {
-    match outcome.failure_detail.as_deref() {
-        Some(detail) => format!("Playback failed/interrupted: {detail}. Progress not updated."),
-        None => "Playback failed/interrupted. Progress not updated.".to_string(),
+fn apply_outcome(
+    db: &Database,
+    item: &SeenEntry,
+    outcome: PlaybackOutcome,
+    success_msg: impl FnOnce(&str) -> String,
+) -> Result<String> {
+    if outcome.success {
+        let updated_ep = outcome
+            .final_episode
+            .unwrap_or_else(|| item.last_episode.clone());
+        db.upsert_seen(&item.ani_id, &item.title, &updated_ep)?;
+        Ok(success_msg(&updated_ep))
+    } else {
+        Ok(playback_failure_message(&outcome))
     }
 }
 
@@ -63,63 +73,27 @@ pub(super) fn run_selected_action(
     match action {
         TuiAction::Next => {
             let outcome = run_ani_cli_continue(item, &item.last_episode)?;
-            if outcome.success {
-                let updated_ep = outcome
-                    .final_episode
-                    .unwrap_or_else(|| item.last_episode.clone());
-                db.upsert_seen(&item.ani_id, &item.title, &updated_ep)?;
-                Ok(format!(
-                    "Updated progress: {} -> episode {}",
-                    item.title, updated_ep
-                ))
-            } else {
-                Ok(playback_failure_message(&outcome))
-            }
+            apply_outcome(db, item, outcome, |ep| {
+                format!("Updated progress: {} -> episode {ep}", item.title)
+            })
         }
         TuiAction::Replay => {
             let outcome = run_ani_cli_replay(item, episode_list)?;
-            if outcome.success {
-                let updated_ep = outcome
-                    .final_episode
-                    .unwrap_or_else(|| item.last_episode.clone());
-                db.upsert_seen(&item.ani_id, &item.title, &updated_ep)?;
-                Ok(format!(
-                    "Replay finished: {} now on episode {}",
-                    item.title, updated_ep
-                ))
-            } else {
-                Ok(playback_failure_message(&outcome))
-            }
+            apply_outcome(db, item, outcome, |ep| {
+                format!("Replay finished: {} now on episode {ep}", item.title)
+            })
         }
         TuiAction::Previous => {
             let outcome = run_ani_cli_previous(item, episode_list)?;
-            if outcome.success {
-                let updated_ep = outcome
-                    .final_episode
-                    .unwrap_or_else(|| item.last_episode.clone());
-                db.upsert_seen(&item.ani_id, &item.title, &updated_ep)?;
-                Ok(format!(
-                    "Previous finished: {} now on episode {}",
-                    item.title, updated_ep
-                ))
-            } else {
-                Ok(playback_failure_message(&outcome))
-            }
+            apply_outcome(db, item, outcome, |ep| {
+                format!("Previous finished: {} now on episode {ep}", item.title)
+            })
         }
         TuiAction::Select => {
             let outcome = run_ani_cli_select(item)?;
-            if outcome.success {
-                let updated_ep = outcome
-                    .final_episode
-                    .unwrap_or_else(|| item.last_episode.clone());
-                db.upsert_seen(&item.ani_id, &item.title, &updated_ep)?;
-                Ok(format!(
-                    "Select finished: {} now on episode {}",
-                    item.title, updated_ep
-                ))
-            } else {
-                Ok(playback_failure_message(&outcome))
-            }
+            apply_outcome(db, item, outcome, |ep| {
+                format!("Select finished: {} now on episode {ep}", item.title)
+            })
         }
     }
 }

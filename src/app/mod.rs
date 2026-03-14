@@ -12,7 +12,9 @@ use crate::db::Database;
 use crate::paths::database_file_path;
 
 use self::episode::{format_last_seen_display, truncate};
-use self::tracking::{run_ani_cli_continue, run_ani_cli_replay, run_ani_cli_search};
+use self::tracking::{
+    playback_failure_message, run_ani_cli_continue, run_ani_cli_replay, run_ani_cli_search,
+};
 
 pub fn run(cli: Cli) -> Result<()> {
     let db = open_db()?;
@@ -128,9 +130,3 @@ fn open_db() -> Result<Database> {
     Ok(db)
 }
 
-fn playback_failure_message(outcome: &tracking::PlaybackOutcome) -> String {
-    match outcome.failure_detail.as_deref() {
-        Some(detail) => format!("Playback failed/interrupted: {detail}. Progress not updated."),
-        None => "Playback failed/interrupted. Progress not updated.".to_string(),
-    }
-}

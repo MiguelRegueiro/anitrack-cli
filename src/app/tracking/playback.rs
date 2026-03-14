@@ -149,6 +149,8 @@ pub(crate) fn run_ani_cli_continue(
     })?;
 
     let ani_cli_bin = resolve_ani_cli_bin();
+    // Use plain .status() rather than run_interactive_cmd: ani-cli -c operates non-interactively
+    // using the seeded temp history to skip the search prompt, so TTY foreground transfer is not needed.
     let status = ProcessCommand::new(&ani_cli_bin)
         .arg("-c")
         .env("ANI_CLI_HIST_DIR", temp_hist_dir.path())
@@ -160,9 +162,7 @@ pub(crate) fn run_ani_cli_continue(
     let success = status.success();
     let final_episode = if success {
         let hist_read = read_hist_map(&histfile);
-        for warning in hist_read.warnings {
-            eprintln!("Warning: {warning}");
-        }
+        emit_warnings(&hist_read.warnings);
         hist_read
             .entries
             .get(&item.ani_id)
@@ -216,24 +216,20 @@ pub(crate) fn run_ani_cli_title(title: &str, select_nth: Option<u32>) -> Result<
     Ok(status)
 }
 
-pub(crate) fn run_ani_cli_episode_with_global_tracking(
+fn run_with_global_tracking(
     item: &SeenEntry,
-    episode: &str,
-    select_nth: Option<u32>,
+    run_cmd: impl FnOnce() -> Result<ExitStatus>,
 ) -> Result<PlaybackOutcome> {
     let histfile = ani_cli_histfile();
     let before_read = read_hist_map(&histfile);
-    for warning in before_read.warnings {
-        eprintln!("Warning: {warning}");
-    }
+    emit_warnings(&before_read.warnings);
     let before = before_read.entries;
-    let status = run_ani_cli_episode(&sanitize_title_for_search(&item.title), select_nth, episode)?;
+
+    let status = run_cmd()?;
     let success = status.success();
     let final_episode = if success {
         let after_read = read_hist_map(&histfile);
-        for warning in after_read.warnings {
-            eprintln!("Warning: {warning}");
-        }
+        emit_warnings(&after_read.warnings);
         after_read
             .entries
             .get(&item.ani_id)
@@ -250,13 +246,16 @@ pub(crate) fn run_ani_cli_episode_with_global_tracking(
     })
 }
 
+pub(crate) fn run_ani_cli_episode_with_global_tracking(
+    item: &SeenEntry,
+    episode: &str,
+    select_nth: Option<u32>,
+) -> Result<PlaybackOutcome> {
+    let title = sanitize_title_for_search(&item.title);
+    run_with_global_tracking(item, || run_ani_cli_episode(&title, select_nth, episode))
+}
+
 pub(crate) fn run_ani_cli_select(item: &SeenEntry) -> Result<PlaybackOutcome> {
-    let histfile = ani_cli_histfile();
-    let before_read = read_hist_map(&histfile);
-    for warning in before_read.warnings {
-        eprintln!("Warning: {warning}");
-    }
-    let before = before_read.entries;
     let resolution = resolve_select_nth_for_item_with_diagnostics(item);
     emit_warnings(&resolution.warnings);
     let select_nth = resolution.index.ok_or_else(|| {
@@ -267,27 +266,8 @@ pub(crate) fn run_ani_cli_select(item: &SeenEntry) -> Result<PlaybackOutcome> {
         }
         anyhow!(message)
     })?;
-    let status = run_ani_cli_title(&sanitize_title_for_search(&item.title), Some(select_nth))?;
-    let success = status.success();
-    let final_episode = if success {
-        let after_read = read_hist_map(&histfile);
-        for warning in after_read.warnings {
-            eprintln!("Warning: {warning}");
-        }
-        after_read
-            .entries
-            .get(&item.ani_id)
-            .or_else(|| before.get(&item.ani_id))
-            .map(|entry| entry.ep.clone())
-    } else {
-        None
-    };
-
-    Ok(PlaybackOutcome {
-        success,
-        final_episode,
-        failure_detail: (!success).then(|| playback_failure_detail(&status)),
-    })
+    let title = sanitize_title_for_search(&item.title);
+    run_with_global_tracking(item, || run_ani_cli_title(&title, Some(select_nth)))
 }
 
 pub(crate) fn run_ani_cli_replay(
@@ -346,16 +326,15 @@ pub(crate) fn run_ani_cli_previous(
     item: &SeenEntry,
     episode_list: Option<&[String]>,
 ) -> Result<PlaybackOutcome> {
-    let fetched_episodes;
-    let resolved_episode_list = if episode_list.is_some() {
-        episode_list
-    } else {
+    let fetched_episodes = if episode_list.is_none() {
         let total_hint = parse_title_and_total_eps(&item.title).1;
         let outcome = fetch_episode_labels_with_diagnostics(&item.ani_id, total_hint);
         emit_warnings(&outcome.warnings);
-        fetched_episodes = outcome.episode_list;
-        fetched_episodes.as_deref()
+        outcome.episode_list
+    } else {
+        None
     };
+    let resolved_episode_list = episode_list.or(fetched_episodes.as_deref());
 
     let target_episode = previous_target_episode(&item.last_episode, resolved_episode_list)
         .ok_or_else(|| anyhow!("no previous episode available"))?;
