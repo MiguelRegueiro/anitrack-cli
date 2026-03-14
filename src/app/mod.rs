@@ -129,4 +129,3 @@ fn open_db() -> Result<Database> {
     db.migrate()?;
     Ok(db)
 }
-
