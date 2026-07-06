@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use chrono::{DateTime, Local};
+use clap::Parser;
 
+use crate::cli::{Cli, Command};
 #[cfg(any(unix, windows))]
 use crate::db::Database;
 
@@ -24,6 +26,17 @@ use super::tracking::*;
 use super::tui::TuiAction;
 #[cfg(any(unix, windows))]
 use super::{run_next, run_start};
+
+#[test]
+fn cli_accepts_global_dub_flag_before_or_after_subcommand() {
+    let before = Cli::parse_from(["anitrack", "--dub", "start"]);
+    assert!(before.dub);
+    assert!(matches!(before.command, Some(Command::Start)));
+
+    let after = Cli::parse_from(["anitrack", "start", "--dub"]);
+    assert!(after.dub);
+    assert!(matches!(after.command, Some(Command::Start)));
+}
 
 #[test]
 fn parse_hist_line_accepts_valid_format() {
@@ -730,6 +743,10 @@ hist_dir="${ANI_CLI_HIST_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ani-cli}"
 hist_file="${hist_dir}/ani-hsts"
 mkdir -p "${hist_dir}"
 
+if [ -n "${ANITRACK_FAKE_ARGS_FILE:-}" ]; then
+  printf '%s\n' "$*" > "${ANITRACK_FAKE_ARGS_FILE}"
+fi
+
 case "${mode}" in
   start_success)
     printf '1\tshow-1\tShow One\n' >> "${hist_file}"
@@ -776,7 +793,7 @@ fn integration_start_records_watch_progress_with_fake_ani_cli() {
     let _hist = ScopedEnvVar::set("ANI_CLI_HIST_DIR", hist_dir.as_os_str());
     let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("start_success"));
 
-    run_start(&db).expect("start command should succeed");
+    run_start(&db, false).expect("start command should succeed");
 
     let last_seen = db
         .last_seen()
@@ -800,13 +817,34 @@ fn integration_next_updates_progress_when_fake_continue_succeeds() {
     let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
     let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("next_success"));
 
-    run_next(&db).expect("next command should complete");
+    run_next(&db, false).expect("next command should complete");
 
     let last_seen = db
         .last_seen()
         .expect("db query should succeed")
         .expect("entry should exist");
     assert_eq!(last_seen.last_episode, "2");
+}
+
+#[cfg(unix)]
+#[test]
+fn integration_next_passes_dub_flag_to_ani_cli() {
+    let _env_guard = env_lock_guard();
+    let sandbox = TestSandbox::new("next-dub");
+    let db = open_test_db(&sandbox.root);
+    let fake_ani_cli = create_fake_ani_cli(&sandbox.root);
+    let args_file = sandbox.root.join("args.txt");
+    db.upsert_seen("show-1", "Show One", "1")
+        .expect("seed row should be inserted");
+
+    let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
+    let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("next_success"));
+    let _args = ScopedEnvVar::set("ANITRACK_FAKE_ARGS_FILE", args_file.as_os_str());
+
+    run_next(&db, true).expect("next command should complete");
+
+    let args = fs::read_to_string(args_file).expect("fake ani-cli args should be captured");
+    assert_eq!(args.trim(), "--dub -c");
 }
 
 #[cfg(unix)]
@@ -822,7 +860,7 @@ fn integration_next_keeps_progress_when_fake_continue_fails() {
     let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
     let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("next_fail"));
 
-    run_next(&db).expect("next command should not bubble fake failure");
+    run_next(&db, false).expect("next command should not bubble fake failure");
 
     let last_seen = db
         .last_seen()
@@ -844,7 +882,7 @@ fn integration_replay_updates_progress_with_fake_continue() {
     let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
     let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("replay_success"));
 
-    run_replay(&db).expect("replay command should complete");
+    run_replay(&db, false).expect("replay command should complete");
 
     let last_seen = db
         .last_seen()
@@ -879,7 +917,7 @@ fn integration_select_updates_progress_with_override_without_network() {
     let _select_title = ScopedEnvVar::set("ANITRACK_FAKE_TITLE", OsStr::new("Show One"));
     let _select_episode = ScopedEnvVar::set("ANITRACK_FAKE_EPISODE", OsStr::new("2"));
 
-    let outcome = run_ani_cli_select(&item).expect("select action should run");
+    let outcome = run_ani_cli_select(&item, false).expect("select action should run");
     assert!(outcome.success, "select action should report success");
     let updated_ep = outcome
         .final_episode
@@ -912,7 +950,8 @@ fn integration_previous_updates_progress_when_fake_continue_succeeds() {
     let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
     let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("previous_success"));
 
-    let outcome = run_ani_cli_previous(&item, Some(&episodes)).expect("previous action should run");
+    let outcome =
+        run_ani_cli_previous(&item, Some(&episodes), false).expect("previous action should run");
     assert!(outcome.success, "previous action should report success");
     let updated_ep = outcome
         .final_episode
@@ -941,8 +980,8 @@ fn integration_previous_keeps_progress_when_no_previous_available() {
         .expect("entry should exist");
     let episodes = vec!["0".to_string(), "1".to_string(), "2".to_string()];
 
-    let err =
-        run_ani_cli_previous(&item, Some(&episodes)).expect_err("no previous should return error");
+    let err = run_ani_cli_previous(&item, Some(&episodes), false)
+        .expect_err("no previous should return error");
     assert!(
         err.to_string().contains("no previous episode available"),
         "unexpected error: {err}"
@@ -973,7 +1012,8 @@ fn integration_previous_keeps_progress_when_playback_fails() {
     let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
     let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("previous_fail"));
 
-    let outcome = run_ani_cli_previous(&item, Some(&episodes)).expect("previous action should run");
+    let outcome =
+        run_ani_cli_previous(&item, Some(&episodes), false).expect("previous action should run");
     assert!(!outcome.success, "previous action should report failure");
     assert!(outcome.final_episode.is_none());
     assert!(
@@ -1009,6 +1049,10 @@ if ($env:ANI_CLI_HIST_DIR) {
 }
 $histFile = Join-Path $histDir "ani-hsts"
 New-Item -ItemType Directory -Path $histDir -Force | Out-Null
+
+if ($env:ANITRACK_FAKE_ARGS_FILE) {
+  Set-Content -Path $env:ANITRACK_FAKE_ARGS_FILE -Value ($args -join " ")
+}
 
 function Bump-History {
   if (-not (Test-Path $histFile)) { return }
@@ -1059,7 +1103,7 @@ fn integration_start_records_watch_progress_with_fake_ani_cli_windows() {
     let _hist = ScopedEnvVar::set("ANI_CLI_HIST_DIR", hist_dir.as_os_str());
     let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("start_success"));
 
-    run_start(&db).expect("start command should succeed");
+    run_start(&db, false).expect("start command should succeed");
 
     let last_seen = db
         .last_seen()
@@ -1083,7 +1127,7 @@ fn integration_next_updates_progress_when_fake_continue_succeeds_windows() {
     let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
     let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("next_success"));
 
-    run_next(&db).expect("next command should complete");
+    run_next(&db, false).expect("next command should complete");
 
     let last_seen = db
         .last_seen()
@@ -1110,7 +1154,8 @@ fn integration_previous_reports_failure_detail_when_playback_fails_windows() {
     let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
     let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("previous_fail"));
 
-    let outcome = run_ani_cli_previous(&item, Some(&episodes)).expect("previous action should run");
+    let outcome =
+        run_ani_cli_previous(&item, Some(&episodes), false).expect("previous action should run");
     assert!(!outcome.success, "previous action should report failure");
     assert!(outcome.final_episode.is_none());
     assert!(
