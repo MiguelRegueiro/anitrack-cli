@@ -8,9 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Added `--dub` mode to pass dubbed playback and search through to `ani-cli`.
+- Added `--dub` mode to pass dubbed playback and search through to `ani-cli`. ([#12])
 
 ### Fixed
+- Fixed metadata lookups being blocked by AllAnime by matching ani-cli's current API request format, with numeric fallback when stored totals are available. ([#13])
 - Warnings from the `Select` action are now consistently printed, matching behavior of other playback actions.
 
 ### Changed
@@ -168,6 +169,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Polished modal styling/layout for delete confirmation and last-episode notice.
 
 [Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.7...HEAD
+[#12]: https://github.com/MiguelRegueiro/anitrack-cli/issues/12
+[#13]: https://github.com/MiguelRegueiro/anitrack-cli/issues/13
 [0.1.7]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.4...v0.1.5
