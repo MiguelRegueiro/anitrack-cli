@@ -118,7 +118,7 @@ impl EpisodeListState {
     }
 }
 
-pub(crate) fn run_tui(db: &Database) -> Result<()> {
+pub(crate) fn run_tui(db: &Database, dub: bool) -> Result<()> {
     let mut session = TuiSession::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))
         .context("failed to initialize terminal backend")?;
@@ -207,7 +207,7 @@ pub(crate) fn run_tui(db: &Database) -> Result<()> {
             KeyCode::Char('q') => break,
             KeyCode::Char('s') => {
                 session.suspend()?;
-                let result = run_ani_cli_search(db);
+                let result = run_ani_cli_search(db, dub);
                 session.resume()?;
                 terminal.clear()?;
 
@@ -293,7 +293,7 @@ pub(crate) fn run_tui(db: &Database) -> Result<()> {
                 let selected_title = items[selected].title.clone();
 
                 session.suspend()?;
-                let result = run_selected_action(db, &items[selected], action, episode_list);
+                let result = run_selected_action(db, &items[selected], action, episode_list, dub);
                 session.resume()?;
                 terminal.clear()?;
 

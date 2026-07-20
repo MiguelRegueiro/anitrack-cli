@@ -69,28 +69,29 @@ pub(super) fn run_selected_action(
     item: &SeenEntry,
     action: TuiAction,
     episode_list: Option<&[String]>,
+    dub: bool,
 ) -> Result<String> {
     match action {
         TuiAction::Next => {
-            let outcome = run_ani_cli_continue(item, &item.last_episode)?;
+            let outcome = run_ani_cli_continue(item, &item.last_episode, dub)?;
             apply_outcome(db, item, outcome, |ep| {
                 format!("Updated progress: {} -> episode {ep}", item.title)
             })
         }
         TuiAction::Replay => {
-            let outcome = run_ani_cli_replay(item, episode_list)?;
+            let outcome = run_ani_cli_replay(item, episode_list, dub)?;
             apply_outcome(db, item, outcome, |ep| {
                 format!("Replay finished: {} now on episode {ep}", item.title)
             })
         }
         TuiAction::Previous => {
-            let outcome = run_ani_cli_previous(item, episode_list)?;
+            let outcome = run_ani_cli_previous(item, episode_list, dub)?;
             apply_outcome(db, item, outcome, |ep| {
                 format!("Previous finished: {} now on episode {ep}", item.title)
             })
         }
         TuiAction::Select => {
-            let outcome = run_ani_cli_select(item)?;
+            let outcome = run_ani_cli_select(item, dub)?;
             apply_outcome(db, item, outcome, |ep| {
                 format!("Select finished: {} now on episode {ep}", item.title)
             })

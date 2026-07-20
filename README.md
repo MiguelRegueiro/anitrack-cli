@@ -92,6 +92,7 @@ anitrack list
 
 #### `anitrack`
 - Opens the TUI (default command).
+- Add `--dub` before or after a subcommand to pass dub mode through to `ani-cli`, for example `anitrack --dub start` or `anitrack next --dub`.
 
 #### `anitrack start`
 - Runs `ani-cli`.

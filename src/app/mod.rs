@@ -20,30 +20,30 @@ pub fn run(cli: Cli) -> Result<()> {
     let db = open_db()?;
 
     match cli.command {
-        Some(Command::Start) => run_start(&db)?,
-        Some(Command::Next) => run_next(&db)?,
-        Some(Command::Replay) => run_replay(&db)?,
+        Some(Command::Start) => run_start(&db, cli.dub)?,
+        Some(Command::Next) => run_next(&db, cli.dub)?,
+        Some(Command::Replay) => run_replay(&db, cli.dub)?,
         Some(Command::List) => run_list(&db)?,
-        Some(Command::Tui) | None => tui::run_tui(&db)?,
+        Some(Command::Tui) | None => tui::run_tui(&db, cli.dub)?,
     }
 
     Ok(())
 }
 
-fn run_start(db: &Database) -> Result<()> {
-    let (message, _) = run_ani_cli_search(db)?;
+fn run_start(db: &Database, dub: bool) -> Result<()> {
+    let (message, _) = run_ani_cli_search(db, dub)?;
     println!("\n{message}");
     Ok(())
 }
 
-fn run_next(db: &Database) -> Result<()> {
+fn run_next(db: &Database, dub: bool) -> Result<()> {
     match db.last_seen()? {
         Some(item) => {
             println!("Playing next episode for last seen show:");
             println!("  Title: {}", item.title);
             println!("  Current stored episode: {}", item.last_episode);
 
-            let outcome = match run_ani_cli_continue(&item, &item.last_episode) {
+            let outcome = match run_ani_cli_continue(&item, &item.last_episode, dub) {
                 Ok(outcome) => outcome,
                 Err(err) => {
                     println!("ani-cli launch failed: {err}");
@@ -66,14 +66,14 @@ fn run_next(db: &Database) -> Result<()> {
     Ok(())
 }
 
-fn run_replay(db: &Database) -> Result<()> {
+fn run_replay(db: &Database, dub: bool) -> Result<()> {
     match db.last_seen()? {
         Some(item) => {
             println!("Replaying last seen episode:");
             println!("  Title: {}", item.title);
             println!("  Episode: {}", item.last_episode);
 
-            let outcome = run_ani_cli_replay(&item, None);
+            let outcome = run_ani_cli_replay(&item, None, dub);
             let outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(err) => {

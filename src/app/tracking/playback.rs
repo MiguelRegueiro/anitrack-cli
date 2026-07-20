@@ -55,7 +55,13 @@ fn playback_failure_detail(status: &ExitStatus) -> String {
     }
 }
 
-pub(crate) fn run_ani_cli_search(db: &Database) -> Result<(String, Option<String>)> {
+fn append_mode_args(cmd: &mut ProcessCommand, dub: bool) {
+    if dub {
+        cmd.arg("--dub");
+    }
+}
+
+pub(crate) fn run_ani_cli_search(db: &Database, dub: bool) -> Result<(String, Option<String>)> {
     let histfile = ani_cli_histfile();
     let before_sig = read_histfile_sig(&histfile);
     let before_read = read_hist_map(&histfile);
@@ -67,6 +73,7 @@ pub(crate) fn run_ani_cli_search(db: &Database) -> Result<(String, Option<String
     let ani_cli_bin = resolve_ani_cli_bin();
     let status = match with_sigint_ignored(|| {
         let mut cmd = ProcessCommand::new(&ani_cli_bin);
+        append_mode_args(&mut cmd, dub);
         cmd.stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
@@ -134,6 +141,7 @@ pub(crate) fn resolve_ani_cli_bin_from_env(env_value: Option<OsString>) -> PathB
 pub(crate) fn run_ani_cli_continue(
     item: &SeenEntry,
     stored_episode: &str,
+    dub: bool,
 ) -> Result<PlaybackOutcome> {
     let temp_hist_dir = TempHistDir::new()?;
     let histfile = temp_hist_dir.histfile_path();
@@ -151,7 +159,9 @@ pub(crate) fn run_ani_cli_continue(
     let ani_cli_bin = resolve_ani_cli_bin();
     // Use plain .status() rather than run_interactive_cmd: ani-cli -c operates non-interactively
     // using the seeded temp history to skip the search prompt, so TTY foreground transfer is not needed.
-    let status = ProcessCommand::new(&ani_cli_bin)
+    let mut cmd = ProcessCommand::new(&ani_cli_bin);
+    append_mode_args(&mut cmd, dub);
+    let status = cmd
         .arg("-c")
         .env("ANI_CLI_HIST_DIR", temp_hist_dir.path())
         .stdin(Stdio::inherit())
@@ -182,9 +192,11 @@ pub(crate) fn run_ani_cli_episode(
     title: &str,
     select_nth: Option<u32>,
     episode: &str,
+    dub: bool,
 ) -> Result<ExitStatus> {
     let ani_cli_bin = resolve_ani_cli_bin();
     let mut cmd = ProcessCommand::new(&ani_cli_bin);
+    append_mode_args(&mut cmd, dub);
     if let Some(index) = select_nth {
         cmd.arg("-S").arg(index.to_string());
     }
@@ -200,9 +212,14 @@ pub(crate) fn run_ani_cli_episode(
     Ok(status)
 }
 
-pub(crate) fn run_ani_cli_title(title: &str, select_nth: Option<u32>) -> Result<ExitStatus> {
+pub(crate) fn run_ani_cli_title(
+    title: &str,
+    select_nth: Option<u32>,
+    dub: bool,
+) -> Result<ExitStatus> {
     let ani_cli_bin = resolve_ani_cli_bin();
     let mut cmd = ProcessCommand::new(&ani_cli_bin);
+    append_mode_args(&mut cmd, dub);
     if let Some(index) = select_nth {
         cmd.arg("-S").arg(index.to_string());
     }
@@ -250,12 +267,15 @@ pub(crate) fn run_ani_cli_episode_with_global_tracking(
     item: &SeenEntry,
     episode: &str,
     select_nth: Option<u32>,
+    dub: bool,
 ) -> Result<PlaybackOutcome> {
     let title = sanitize_title_for_search(&item.title);
-    run_with_global_tracking(item, || run_ani_cli_episode(&title, select_nth, episode))
+    run_with_global_tracking(item, || {
+        run_ani_cli_episode(&title, select_nth, episode, dub)
+    })
 }
 
-pub(crate) fn run_ani_cli_select(item: &SeenEntry) -> Result<PlaybackOutcome> {
+pub(crate) fn run_ani_cli_select(item: &SeenEntry, dub: bool) -> Result<PlaybackOutcome> {
     let resolution = resolve_select_nth_for_item_with_diagnostics(item);
     emit_warnings(&resolution.warnings);
     let select_nth = resolution.index.ok_or_else(|| {
@@ -267,12 +287,13 @@ pub(crate) fn run_ani_cli_select(item: &SeenEntry) -> Result<PlaybackOutcome> {
         anyhow!(message)
     })?;
     let title = sanitize_title_for_search(&item.title);
-    run_with_global_tracking(item, || run_ani_cli_title(&title, Some(select_nth)))
+    run_with_global_tracking(item, || run_ani_cli_title(&title, Some(select_nth), dub))
 }
 
 pub(crate) fn run_ani_cli_replay(
     item: &SeenEntry,
     episode_list: Option<&[String]>,
+    dub: bool,
 ) -> Result<PlaybackOutcome> {
     // Avoid external metadata fetches when numeric fallback already determines replay plan.
     let should_fetch_episodes =
@@ -295,11 +316,11 @@ pub(crate) fn run_ani_cli_replay(
     });
     emit_warnings(&select_warnings);
     match plan {
-        ReplayPlan::Continue { seed_episode } => run_ani_cli_continue(item, &seed_episode),
+        ReplayPlan::Continue { seed_episode } => run_ani_cli_continue(item, &seed_episode, dub),
         ReplayPlan::Episode {
             episode,
             select_nth,
-        } => run_ani_cli_episode_with_global_tracking(item, &episode, select_nth),
+        } => run_ani_cli_episode_with_global_tracking(item, &episode, select_nth, dub),
     }
 }
 
@@ -325,6 +346,7 @@ where
 pub(crate) fn run_ani_cli_previous(
     item: &SeenEntry,
     episode_list: Option<&[String]>,
+    dub: bool,
 ) -> Result<PlaybackOutcome> {
     let fetched_episodes = if episode_list.is_none() {
         let total_hint = parse_title_and_total_eps(&item.title).1;
@@ -339,7 +361,7 @@ pub(crate) fn run_ani_cli_previous(
     let target_episode = previous_target_episode(&item.last_episode, resolved_episode_list)
         .ok_or_else(|| anyhow!("no previous episode available"))?;
     if let Some(seed_episode) = previous_seed_episode(&item.last_episode, resolved_episode_list) {
-        run_ani_cli_continue(item, &seed_episode)
+        run_ani_cli_continue(item, &seed_episode, dub)
     } else {
         let resolution = resolve_select_nth_for_item_with_diagnostics(item);
         emit_warnings(&resolution.warnings);
@@ -351,7 +373,7 @@ pub(crate) fn run_ani_cli_previous(
             }
             anyhow!(message)
         })?;
-        run_ani_cli_episode_with_global_tracking(item, &target_episode, Some(select_nth))
+        run_ani_cli_episode_with_global_tracking(item, &target_episode, Some(select_nth), dub)
     }
 }
 

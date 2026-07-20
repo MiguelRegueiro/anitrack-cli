@@ -7,6 +7,10 @@ use clap::{Parser, Subcommand};
     about = "Launch ani-cli and track last seen show/episode"
 )]
 pub struct Cli {
+    /// Pass --dub through to ani-cli for playback/search.
+    #[arg(long, global = true)]
+    pub dub: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
