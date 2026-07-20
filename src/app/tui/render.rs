@@ -17,6 +17,12 @@ use super::super::episode::{
 };
 use super::{EpisodeListState, PendingDelete, PendingNotice, TuiAction};
 
+struct LibraryColumns {
+    headers: Vec<&'static str>,
+    widths: Vec<Constraint>,
+    show_last_seen: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_tui(
     frame: &mut Frame,
@@ -84,47 +90,42 @@ pub(super) fn draw_tui(
         .constraints([Constraint::Min(8), Constraint::Length(3)])
         .split(body_chunks[1]);
 
+    let library_columns = library_columns(body_chunks[0].width);
     let rows: Vec<Row> = items
         .iter()
         .map(|item| {
             let (display_title, total_eps) = parse_title_and_total_eps(&item.title);
-            Row::new(vec![
+            let total_eps = total_eps
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let mut cells = vec![
                 Cell::from(display_title),
-                Cell::from(
-                    total_eps
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "-".to_string()),
-                ),
+                Cell::from(total_eps),
                 Cell::from(item.last_episode.clone()),
-                Cell::from(format_last_seen_display_tui(&item.last_seen_at)),
-            ])
+            ];
+            if library_columns.show_last_seen {
+                cells.push(Cell::from(format_last_seen_display_tui(&item.last_seen_at)));
+            }
+            Row::new(cells)
         })
         .collect();
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Percentage(46),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(33),
-        ],
-    )
-    .header(
-        Row::new(vec!["Title", "Total Eps", "Last Ep", "Last Seen"]).style(
+    let table = Table::new(rows, library_columns.widths)
+        .header(
+            Row::new(library_columns.headers).style(
+                Style::default()
+                    .fg(Color::Rgb(110, 170, 255))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        )
+        .block(panel_block("Library"))
+        .row_highlight_style(
             Style::default()
-                .fg(Color::Rgb(110, 170, 255))
+                .bg(Color::Rgb(110, 170, 255))
+                .fg(Color::Black)
                 .add_modifier(Modifier::BOLD),
-        ),
-    )
-    .block(panel_block("Library"))
-    .row_highlight_style(
-        Style::default()
-            .bg(Color::Rgb(110, 170, 255))
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▸ ");
+        )
+        .highlight_symbol("▸ ");
     frame.render_stateful_widget(table, body_chunks[0], table_state);
 
     let (selection_text, gauge) = match table_state.selected().and_then(|idx| items.get(idx)) {
@@ -212,6 +213,48 @@ pub(super) fn draw_tui(
             .wrap(Wrap { trim: true })
             .block(modal_block("No More Episodes"));
         frame.render_widget(popup, popup_area);
+    }
+}
+
+fn library_columns(width: u16) -> LibraryColumns {
+    let content_width = width.saturating_sub(2).max(1);
+    let eps_width = 5;
+    let last_ep_width = 5;
+    let fixed_width = eps_width + last_ep_width;
+
+    if content_width >= 52 {
+        let min_title_width = 28;
+        let min_seen_width = 8;
+        let preferred_seen_width = if content_width >= 82 { 20 } else { 12 };
+        let available_seen_width = content_width.saturating_sub(fixed_width + min_title_width);
+        let seen_width = available_seen_width.clamp(min_seen_width, preferred_seen_width);
+        let title_width = content_width.saturating_sub(fixed_width + seen_width);
+
+        return LibraryColumns {
+            headers: if content_width >= 82 {
+                vec!["Title", "Eps", "Last", "Last Seen"]
+            } else {
+                vec!["Title", "Eps", "Last", "Seen"]
+            },
+            widths: vec![
+                Constraint::Length(title_width),
+                Constraint::Length(eps_width),
+                Constraint::Length(last_ep_width),
+                Constraint::Length(seen_width),
+            ],
+            show_last_seen: true,
+        };
+    }
+
+    let title_width = content_width.saturating_sub(fixed_width).max(1);
+    LibraryColumns {
+        headers: vec!["Title", "Eps", "Last"],
+        widths: vec![
+            Constraint::Length(title_width),
+            Constraint::Length(eps_width),
+            Constraint::Length(last_ep_width),
+        ],
+        show_last_seen: false,
     }
 }
 

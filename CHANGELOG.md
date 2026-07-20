@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Warnings from the `Select` action are now consistently printed, matching behavior of other playback actions.
 
 ### Changed
+- Polished the TUI layout with transparent background rendering and more responsive library columns.
 - Release binary reduced from ~6.4 MB to ~4.6 MB by enabling strip, thin LTO, and single codegen unit in the release profile.
 
 ## [0.1.7] - 2026-03-01
