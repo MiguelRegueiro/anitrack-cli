@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added `--dub` mode to pass dubbed playback and search through to `ani-cli`.
+
 ### Fixed
 - Warnings from the `Select` action are now consistently printed, matching behavior of other playback actions.
 

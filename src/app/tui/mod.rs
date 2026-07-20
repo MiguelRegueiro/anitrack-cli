@@ -152,6 +152,7 @@ pub(crate) fn run_tui(db: &Database, dub: bool) -> Result<()> {
                 &items,
                 &mut table_state,
                 action,
+                dub,
                 &status,
                 pending_delete.as_ref(),
                 pending_notice.as_ref(),

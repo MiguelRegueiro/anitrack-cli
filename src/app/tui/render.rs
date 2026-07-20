@@ -23,6 +23,7 @@ pub(super) fn draw_tui(
     items: &[SeenEntry],
     table_state: &mut TableState,
     action: TuiAction,
+    dub: bool,
     status: &str,
     pending_delete: Option<&PendingDelete>,
     pending_notice: Option<&PendingNotice>,
@@ -67,6 +68,11 @@ pub(super) fn draw_tui(
         ),
         Span::styled("   ", Style::default()),
         Span::styled(mode_text, Style::default().fg(Color::Yellow)),
+        if dub {
+            Span::styled("   DUB", Style::default().fg(Color::Magenta))
+        } else {
+            Span::raw("")
+        },
     ]))
     .alignment(Alignment::Center)
     .block(panel_block("Dashboard"));
