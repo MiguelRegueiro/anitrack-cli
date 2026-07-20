@@ -1,14 +1,17 @@
 use std::thread;
 use std::time::Duration;
 
+const ANI_CLI_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0";
+
 fn should_retry_http_status(status: u16) -> bool {
     status == 408 || status == 429 || (500..=599).contains(&status)
 }
 
-pub(crate) fn get_text_with_retries(
+pub(crate) fn post_json_with_retries(
     url: &str,
     referer: &str,
-    query: &[(String, String)],
+    body: &str,
     connect_timeout: Duration,
     read_timeout: Duration,
     attempts: usize,
@@ -23,12 +26,13 @@ pub(crate) fn get_text_with_retries(
             .timeout_write(read_timeout)
             .build();
 
-        let mut request = agent.get(url).set("Referer", referer);
-        for (key, value) in query {
-            request = request.query(key, value);
-        }
+        let request = agent
+            .post(url)
+            .set("Referer", referer)
+            .set("Content-Type", "application/json")
+            .set("User-Agent", ANI_CLI_USER_AGENT);
 
-        match request.call() {
+        match request.send_string(body) {
             Ok(response) => match response.into_string() {
                 Ok(body) => return Ok(body),
                 Err(err) => {
@@ -210,12 +214,10 @@ mod tests {
             Behavior::Respond(429, "throttled".to_string()),
             Behavior::Respond(200, "ok".to_string()),
         ]);
-        let query = vec![("q".to_string(), "x".to_string())];
-
-        let result = get_text_with_retries(
+        let result = post_json_with_retries(
             &server.base_url,
             "https://example.test",
-            &query,
+            "{}",
             Duration::from_millis(200),
             Duration::from_millis(200),
             3,
@@ -229,12 +231,10 @@ mod tests {
     #[test]
     fn does_not_retry_hard_client_errors() {
         let server = TestServer::spawn(vec![Behavior::Respond(404, "not-found".to_string())]);
-        let query = vec![("q".to_string(), "x".to_string())];
-
-        let result = get_text_with_retries(
+        let result = post_json_with_retries(
             &server.base_url,
             "https://example.test",
-            &query,
+            "{}",
             Duration::from_millis(200),
             Duration::from_millis(200),
             5,
@@ -255,12 +255,10 @@ mod tests {
             Behavior::DelayRespond(Duration::from_millis(250), 200, "slow".to_string()),
             Behavior::Respond(200, "ok".to_string()),
         ]);
-        let query = vec![("q".to_string(), "x".to_string())];
-
-        let result = get_text_with_retries(
+        let result = post_json_with_retries(
             &server.base_url,
             "https://example.test",
-            &query,
+            "{}",
             Duration::from_millis(250),
             Duration::from_millis(80),
             2,
@@ -277,12 +275,10 @@ mod tests {
             Behavior::Respond(503, "down".to_string()),
             Behavior::Respond(503, "still-down".to_string()),
         ]);
-        let query = vec![("q".to_string(), "x".to_string())];
-
-        let result = get_text_with_retries(
+        let result = post_json_with_retries(
             &server.base_url,
             "https://example.test",
-            &query,
+            "{}",
             Duration::from_millis(200),
             Duration::from_millis(200),
             2,

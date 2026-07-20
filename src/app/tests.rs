@@ -633,6 +633,14 @@ fn parse_mode_episode_labels_extracts_string_and_numeric_values() {
 }
 
 #[test]
+fn choose_episode_labels_candidate_falls_back_to_numeric_total() {
+    let fallback = fallback_numeric_episode_labels(Some(3)).expect("fallback should exist");
+    assert_eq!(fallback, vec!["1", "2", "3"]);
+    assert!(fallback_numeric_episode_labels(None).is_none());
+    assert!(fallback_numeric_episode_labels(Some(0)).is_none());
+}
+
+#[test]
 fn parse_search_result_entries_handles_escaped_titles() {
     let raw = r#"{"data":{"shows":{"edges":[{"_id":"id-1","name":"Boku no Hero Academia: Heroes Rising \"Special\""}]}}}"#;
     let entries = parse_search_result_entries(raw);

@@ -2,9 +2,9 @@ use std::cmp::Ordering;
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use crate::http::get_text_with_retries;
+use crate::http::post_json_with_retries;
 
 pub(crate) fn parse_title_and_total_eps(title: &str) -> (String, Option<u32>) {
     let trimmed = title.trim();
@@ -102,6 +102,11 @@ pub(crate) fn choose_episode_labels_candidate(
     candidates.into_iter().max_by_key(|episodes| episodes.len())
 }
 
+pub(crate) fn fallback_numeric_episode_labels(total_hint: Option<u32>) -> Option<Vec<String>> {
+    let total = total_hint?;
+    (total > 0).then(|| (1..=total).map(|episode| episode.to_string()).collect())
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct EpisodeLabelFetchOutcome {
     pub(crate) episode_list: Option<Vec<String>>,
@@ -113,15 +118,17 @@ pub(crate) fn fetch_episode_labels_with_diagnostics(
     total_hint: Option<u32>,
 ) -> EpisodeLabelFetchOutcome {
     let query = "query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail }}";
-    let variables = format!("{{\"showId\":\"{ani_id}\"}}");
-    let query_params = vec![
-        ("variables".to_string(), variables),
-        ("query".to_string(), query.to_string()),
-    ];
-    let raw = match get_text_with_retries(
+    let body = json!({
+        "variables": {
+            "showId": ani_id,
+        },
+        "query": query,
+    })
+    .to_string();
+    let raw = match post_json_with_retries(
         "https://api.allanime.day/api",
-        "https://allanime.to",
-        &query_params,
+        "https://allmanga.to",
+        &body,
         Duration::from_secs(3),
         Duration::from_secs(5),
         3,
@@ -129,6 +136,12 @@ pub(crate) fn fetch_episode_labels_with_diagnostics(
     ) {
         Ok(raw) => raw,
         Err(err) => {
+            if let Some(episode_list) = fallback_numeric_episode_labels(total_hint) {
+                return EpisodeLabelFetchOutcome {
+                    episode_list: Some(episode_list),
+                    warnings: Vec::new(),
+                };
+            }
             let warning = format!("episode metadata request failed for {ani_id}: {err}");
             return EpisodeLabelFetchOutcome {
                 episode_list: None,
@@ -157,6 +170,12 @@ pub(crate) fn fetch_episode_labels_with_diagnostics(
         candidates.push(dub);
     }
     let Some(mut episodes) = choose_episode_labels_candidate(candidates, total_hint) else {
+        if let Some(episode_list) = fallback_numeric_episode_labels(total_hint) {
+            return EpisodeLabelFetchOutcome {
+                episode_list: Some(episode_list),
+                warnings: Vec::new(),
+            };
+        }
         return EpisodeLabelFetchOutcome {
             episode_list: None,
             warnings: vec![format!(

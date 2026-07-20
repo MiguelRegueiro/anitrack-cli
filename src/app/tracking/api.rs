@@ -1,11 +1,11 @@
 use std::env;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::super::episode::{parse_title_and_total_eps, sanitize_title_for_search};
 use crate::db::SeenEntry;
-use crate::http::get_text_with_retries;
+use crate::http::post_json_with_retries;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SelectNthResolution {
@@ -84,19 +84,25 @@ pub(crate) fn fetch_search_result_entries_with_diagnostics(
     mode: &str,
 ) -> SearchEntriesFetchOutcome {
     let gql = "query( $search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType ) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } }}";
-    let escaped_query = json_escape(query);
-    let escaped_mode = json_escape(mode);
-    let variables = format!(
-        "{{\"search\":{{\"allowAdult\":false,\"allowUnknown\":false,\"query\":\"{escaped_query}\"}},\"limit\":40,\"page\":1,\"translationType\":\"{escaped_mode}\",\"countryOrigin\":\"ALL\"}}"
-    );
-    let query_params = vec![
-        ("variables".to_string(), variables),
-        ("query".to_string(), gql.to_string()),
-    ];
-    let raw = match get_text_with_retries(
+    let body = json!({
+        "variables": {
+            "search": {
+                "allowAdult": false,
+                "allowUnknown": false,
+                "query": query,
+            },
+            "limit": 40,
+            "page": 1,
+            "translationType": mode,
+            "countryOrigin": "ALL",
+        },
+        "query": gql,
+    })
+    .to_string();
+    let raw = match post_json_with_retries(
         "https://api.allanime.day/api",
         "https://allmanga.to",
-        &query_params,
+        &body,
         Duration::from_secs(3),
         Duration::from_secs(6),
         3,
@@ -199,6 +205,7 @@ pub(crate) fn normalize_title_for_match(raw: &str) -> String {
         .join(" ")
 }
 
+#[cfg(test)]
 pub(crate) fn json_escape(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for ch in raw.chars() {
