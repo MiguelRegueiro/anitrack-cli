@@ -29,9 +29,6 @@ pub(super) fn draw_tui(
     pending_notice: Option<&PendingNotice>,
     episode_lists_by_id: &HashMap<String, EpisodeListState>,
 ) {
-    let bg = Block::default().style(Style::default().bg(Color::Black));
-    frame.render_widget(bg, frame.area());
-
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -170,17 +167,18 @@ pub(super) fn draw_tui(
         .alignment(Alignment::Left);
     frame.render_widget(selection, details_chunks[0]);
     if let Some((ratio, label)) = gauge {
+        let progress_area = details_chunks[1];
         let progress = Gauge::default()
             .block(panel_block("Progress"))
             .gauge_style(
                 Style::default()
                     .fg(Color::Rgb(130, 190, 255))
-                    .bg(Color::Black)
                     .add_modifier(Modifier::BOLD),
             )
-            .label(label)
+            .label("")
             .ratio(ratio);
-        frame.render_widget(progress, details_chunks[1]);
+        frame.render_widget(progress, progress_area);
+        render_progress_label(frame, progress_area, ratio, &label);
     }
 
     let action_line = action_selector_line(action);
@@ -200,7 +198,6 @@ pub(super) fn draw_tui(
             truncate(&confirm.title, 56)
         );
         let popup_area = popup_rect_for_text(frame.area(), &popup_text);
-        render_popup_shadow(frame, popup_area);
         frame.render_widget(Clear, popup_area);
         let popup = Paragraph::new(popup_text)
             .alignment(Alignment::Center)
@@ -209,7 +206,6 @@ pub(super) fn draw_tui(
         frame.render_widget(popup, popup_area);
     } else if let Some(notice) = pending_notice {
         let popup_area = popup_rect_for_text(frame.area(), &notice.message);
-        render_popup_shadow(frame, popup_area);
         frame.render_widget(Clear, popup_area);
         let popup = Paragraph::new(notice.message.clone())
             .alignment(Alignment::Center)
@@ -300,19 +296,38 @@ fn centered_fixed_rect(width: u16, height: u16, area: Rect) -> Rect {
     Rect::new(x, y, clamped_width, clamped_height)
 }
 
-fn render_popup_shadow(frame: &mut Frame, popup_area: Rect) {
-    let area = frame.area();
-    let shadow = Rect::new(
-        (popup_area.x + 1).min(area.x + area.width.saturating_sub(1)),
-        (popup_area.y + 1).min(area.y + area.height.saturating_sub(1)),
-        popup_area.width.saturating_sub(1),
-        popup_area.height.saturating_sub(1),
+fn render_progress_label(frame: &mut Frame, area: Rect, ratio: f64, label: &str) {
+    let inner = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
     );
-    if shadow.width == 0 || shadow.height == 0 {
+    if inner.width == 0 || inner.height == 0 || label.is_empty() {
         return;
     }
-    let shadow_block = Block::default().style(Style::default().bg(Color::Rgb(14, 16, 24)));
-    frame.render_widget(shadow_block, shadow);
+
+    let label_width = (label.chars().count() as u16).min(inner.width);
+    let label_x = inner.x + inner.width.saturating_sub(label_width) / 2;
+    let label_y = inner.y + inner.height / 2;
+    let filled_end = inner.x + (f64::from(inner.width) * ratio).round() as u16;
+
+    for (offset, ch) in label.chars().take(label_width as usize).enumerate() {
+        let x = label_x + offset as u16;
+        let style = if x < filled_end {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Rgb(130, 190, 255))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Rgb(130, 190, 255))
+                .add_modifier(Modifier::BOLD)
+        };
+        if let Some(cell) = frame.buffer_mut().cell_mut((x, label_y)) {
+            cell.set_symbol(&ch.to_string()).set_style(style);
+        }
+    }
 }
 
 fn popup_rect_for_text(area: Rect, text: &str) -> Rect {
