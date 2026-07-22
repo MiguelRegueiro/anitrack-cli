@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fixed metadata lookups being blocked by AllAnime by matching ani-cli's current API request format, with numeric fallback when stored totals are available. ([#13])
+- Fixed TUI mouse-wheel navigation jumping multiple rows per scroll by moving the selection one row per wheel event.
 - Warnings from the `Select` action are now consistently printed, matching behavior of other playback actions.
 
 ### Changed
