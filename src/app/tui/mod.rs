@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::widgets::TableState;
@@ -164,9 +164,27 @@ pub(crate) fn run_tui(db: &Database, dub: bool) -> Result<()> {
             continue;
         }
 
-        let Event::Key(key) = event::read()? else {
+        let event = event::read()?;
+        if let Event::Mouse(mouse) = event {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    if let Some(selected) = table_state.selected() {
+                        table_state.select(Some(selected.saturating_sub(1)));
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    if let Some(selected) = table_state.selected()
+                        && !items.is_empty()
+                    {
+                        let next = (selected + 1).min(items.len().saturating_sub(1));
+                        table_state.select(Some(next));
+                    }
+                }
+                _ => {}
+            }
             continue;
-        };
+        }
+        let Event::Key(key) = event else { continue };
         if key.kind != KeyEventKind::Press {
             continue;
         }
