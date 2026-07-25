@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added forwarding for ani-cli's `--vlc` player flag when requested.
+
+### Fixed
+- Fixed TUI `Select` to pick an episode first, then launch it through ani-cli's history-based path when possible to avoid flaky title-search playback failures.
+
 ## [0.1.8] - 2026-07-24
 
 ### Added

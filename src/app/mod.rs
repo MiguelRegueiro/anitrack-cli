@@ -13,37 +13,42 @@ use crate::paths::database_file_path;
 
 use self::episode::{format_last_seen_display, truncate};
 use self::tracking::{
-    playback_failure_message, run_ani_cli_continue, run_ani_cli_replay, run_ani_cli_search,
+    PlaybackOptions, playback_failure_message, run_ani_cli_continue, run_ani_cli_replay,
+    run_ani_cli_search,
 };
 
 pub fn run(cli: Cli) -> Result<()> {
     let db = open_db()?;
+    let playback_options = PlaybackOptions {
+        dub: cli.dub,
+        vlc: cli.vlc,
+    };
 
     match cli.command {
-        Some(Command::Start) => run_start(&db, cli.dub)?,
-        Some(Command::Next) => run_next(&db, cli.dub)?,
-        Some(Command::Replay) => run_replay(&db, cli.dub)?,
+        Some(Command::Start) => run_start(&db, playback_options)?,
+        Some(Command::Next) => run_next(&db, playback_options)?,
+        Some(Command::Replay) => run_replay(&db, playback_options)?,
         Some(Command::List) => run_list(&db)?,
-        Some(Command::Tui) | None => tui::run_tui(&db, cli.dub)?,
+        Some(Command::Tui) | None => tui::run_tui(&db, playback_options)?,
     }
 
     Ok(())
 }
 
-fn run_start(db: &Database, dub: bool) -> Result<()> {
-    let (message, _) = run_ani_cli_search(db, dub)?;
+fn run_start(db: &Database, options: PlaybackOptions) -> Result<()> {
+    let (message, _) = run_ani_cli_search(db, options)?;
     println!("\n{message}");
     Ok(())
 }
 
-fn run_next(db: &Database, dub: bool) -> Result<()> {
+fn run_next(db: &Database, options: PlaybackOptions) -> Result<()> {
     match db.last_seen()? {
         Some(item) => {
             println!("Playing next episode for last seen show:");
             println!("  Title: {}", item.title);
             println!("  Current stored episode: {}", item.last_episode);
 
-            let outcome = match run_ani_cli_continue(&item, &item.last_episode, dub) {
+            let outcome = match run_ani_cli_continue(&item, &item.last_episode, options) {
                 Ok(outcome) => outcome,
                 Err(err) => {
                     println!("ani-cli launch failed: {err}");
@@ -66,14 +71,14 @@ fn run_next(db: &Database, dub: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_replay(db: &Database, dub: bool) -> Result<()> {
+fn run_replay(db: &Database, options: PlaybackOptions) -> Result<()> {
     match db.last_seen()? {
         Some(item) => {
             println!("Replaying last seen episode:");
             println!("  Title: {}", item.title);
             println!("  Episode: {}", item.last_episode);
 
-            let outcome = run_ani_cli_replay(&item, None, dub);
+            let outcome = run_ani_cli_replay(&item, None, options);
             let outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(err) => {
