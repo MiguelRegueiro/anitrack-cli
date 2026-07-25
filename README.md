@@ -66,6 +66,15 @@ anitrack --dub start
 anitrack next --dub
 ```
 
+Use `--vlc` the same way to forward ani-cli's VLC player flag:
+
+```bash
+anitrack --vlc start
+anitrack next --vlc
+```
+
+Custom ani-cli player preferences, such as `ANI_CLI_PLAYER`, are still handled by ani-cli and inherited by anitrack.
+
 In the TUI, use `↑` / `↓` or the mouse wheel to choose a show, `←` / `→` to choose an action, and `Enter` to run it. Press `s` to search, `d` to delete, or `q` to quit.
 
 Linux is the primary target. macOS and Windows are CI-tested, but runtime support depends on `ani-cli`.

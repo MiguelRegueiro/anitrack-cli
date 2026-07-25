@@ -11,6 +11,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub dub: bool,
 
+    /// Pass --vlc through to ani-cli.
+    #[arg(long, global = true)]
+    pub vlc: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }

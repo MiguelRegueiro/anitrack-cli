@@ -16,7 +16,7 @@ use ratatui::widgets::TableState;
 use crate::db::Database;
 
 use super::episode::{has_next_episode, has_previous_episode, parse_title_and_total_eps, truncate};
-use super::tracking::run_ani_cli_search;
+use super::tracking::{PlaybackOptions, run_ani_cli_search};
 
 use self::actions::{
     drain_episode_fetch_results, ensure_selected_episode_list, refresh_items, run_selected_action,
@@ -118,7 +118,7 @@ impl EpisodeListState {
     }
 }
 
-pub(crate) fn run_tui(db: &Database, dub: bool) -> Result<()> {
+pub(crate) fn run_tui(db: &Database, options: PlaybackOptions) -> Result<()> {
     let mut session = TuiSession::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))
         .context("failed to initialize terminal backend")?;
@@ -152,7 +152,7 @@ pub(crate) fn run_tui(db: &Database, dub: bool) -> Result<()> {
                 &items,
                 &mut table_state,
                 action,
-                dub,
+                options.dub,
                 &status,
                 pending_delete.as_ref(),
                 pending_notice.as_ref(),
@@ -226,7 +226,7 @@ pub(crate) fn run_tui(db: &Database, dub: bool) -> Result<()> {
             KeyCode::Char('q') => break,
             KeyCode::Char('s') => {
                 session.suspend()?;
-                let result = run_ani_cli_search(db, dub);
+                let result = run_ani_cli_search(db, options);
                 session.resume()?;
                 terminal.clear()?;
 
@@ -312,7 +312,8 @@ pub(crate) fn run_tui(db: &Database, dub: bool) -> Result<()> {
                 let selected_title = items[selected].title.clone();
 
                 session.suspend()?;
-                let result = run_selected_action(db, &items[selected], action, episode_list, dub);
+                let result =
+                    run_selected_action(db, &items[selected], action, episode_list, options);
                 session.resume()?;
                 terminal.clear()?;
 

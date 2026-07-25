@@ -9,6 +9,12 @@ pub(crate) use api::*;
 pub(crate) use history::*;
 pub(crate) use playback::*;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PlaybackOptions {
+    pub(crate) dub: bool,
+    pub(crate) vlc: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct HistEntry {
     pub(crate) ep: String,
