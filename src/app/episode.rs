@@ -284,6 +284,25 @@ pub(crate) fn has_next_episode(
     true
 }
 
+pub(crate) fn display_total_episodes(
+    last_episode: &str,
+    stored_total: Option<u32>,
+    title_total: Option<u32>,
+    episode_list: Option<&[String]>,
+) -> Option<u32> {
+    let mut total = episode_list
+        .and_then(|episodes| u32::try_from(episodes.len()).ok())
+        .filter(|count| *count > 0)
+        .or(stored_total)
+        .or(title_total);
+
+    if let Some(last) = parse_episode_u32(last_episode) {
+        total = Some(total.map_or(last, |current| current.max(last)));
+    }
+
+    total
+}
+
 pub(crate) fn has_previous_episode(last_episode: &str, episode_list: Option<&[String]>) -> bool {
     previous_target_episode(last_episode, episode_list).is_some()
 }

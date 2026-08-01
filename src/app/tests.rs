@@ -408,6 +408,8 @@ fn replay_plan_uses_select_nth_for_episode_zero_fallback() {
         title: "Replay Zero Show (2 episodes)".to_string(),
         last_episode: "0".to_string(),
         last_seen_at: "2026-02-27T00:00:00+00:00".to_string(),
+        total_episodes: Some(2),
+        episodes_updated_at: None,
     };
     let episodes = vec!["0".to_string(), "1".to_string(), "2".to_string()];
 
@@ -428,6 +430,8 @@ fn replay_plan_uses_continue_seed_when_available() {
         title: "Replay Normal Show (12 episodes)".to_string(),
         last_episode: "5".to_string(),
         last_seen_at: "2026-02-27T00:00:00+00:00".to_string(),
+        total_episodes: Some(12),
+        episodes_updated_at: None,
     };
 
     let plan = build_replay_plan(&item, None, |_| Some(99));
@@ -572,6 +576,29 @@ fn has_next_episode_uses_episode_list_for_non_linear_numbering() {
 fn has_next_episode_falls_back_to_numeric_when_list_missing() {
     assert!(has_next_episode("25", Some(27), None));
     assert!(!has_next_episode("27", Some(27), None));
+}
+
+#[test]
+fn display_total_episodes_prefers_episode_list_then_cached_then_title() {
+    let episodes = vec!["1".to_string(), "2".to_string(), "3".to_string()];
+
+    assert_eq!(
+        display_total_episodes("2", Some(2), Some(12), Some(&episodes)),
+        Some(3)
+    );
+    assert_eq!(
+        display_total_episodes("2", Some(5), Some(12), None),
+        Some(5)
+    );
+    assert_eq!(display_total_episodes("2", None, Some(12), None), Some(12));
+}
+
+#[test]
+fn display_total_episodes_never_shows_less_than_last_numeric_episode() {
+    assert_eq!(
+        display_total_episodes("12", Some(11), Some(11), None),
+        Some(12)
+    );
 }
 
 #[test]
@@ -1039,6 +1066,8 @@ fn integration_previous_updates_progress_when_fake_continue_succeeds() {
         title: "Show One".to_string(),
         last_episode: "3".to_string(),
         last_seen_at: "2026-02-27T00:00:00+00:00".to_string(),
+        total_episodes: Some(3),
+        episodes_updated_at: None,
     };
     let episodes = vec!["1".to_string(), "2".to_string(), "3".to_string()];
 

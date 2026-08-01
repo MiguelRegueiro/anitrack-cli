@@ -12,8 +12,8 @@ use ratatui::widgets::{
 use crate::db::SeenEntry;
 
 use super::super::episode::{
-    build_progress_gauge, format_episode_progress_text, format_last_seen_display_tui,
-    parse_title_and_total_eps, truncate,
+    build_progress_gauge, display_total_episodes, format_episode_progress_text,
+    format_last_seen_display_tui, parse_title_and_total_eps, truncate,
 };
 use super::{EpisodeListState, PendingDelete, PendingNotice, TuiAction};
 
@@ -94,10 +94,17 @@ pub(super) fn draw_tui(
     let rows: Vec<Row> = items
         .iter()
         .map(|item| {
-            let (display_title, total_eps) = parse_title_and_total_eps(&item.title);
-            let total_eps = total_eps
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "-".to_string());
+            let (display_title, title_total_eps) = parse_title_and_total_eps(&item.title);
+            let episode_state = episode_lists_by_id.get(&item.ani_id);
+            let episode_list = episode_state.and_then(EpisodeListState::episode_list);
+            let total_eps = display_total_episodes(
+                &item.last_episode,
+                item.total_episodes,
+                title_total_eps,
+                episode_list,
+            )
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string());
             let mut cells = vec![
                 Cell::from(display_title),
                 Cell::from(total_eps),
@@ -130,12 +137,18 @@ pub(super) fn draw_tui(
 
     let (selection_text, gauge) = match table_state.selected().and_then(|idx| items.get(idx)) {
         Some(item) => {
-            let (title, total_eps) = parse_title_and_total_eps(&item.title);
+            let (title, title_total_eps) = parse_title_and_total_eps(&item.title);
+            let episode_state = episode_lists_by_id.get(&item.ani_id);
+            let episode_list = episode_state.and_then(EpisodeListState::episode_list);
+            let total_eps = display_total_episodes(
+                &item.last_episode,
+                item.total_episodes,
+                title_total_eps,
+                episode_list,
+            );
             let total_eps_text = total_eps
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "-".to_string());
-            let episode_state = episode_lists_by_id.get(&item.ani_id);
-            let episode_list = episode_state.and_then(EpisodeListState::episode_list);
             let episode_progress_text = total_eps
                 .map(|total| format_episode_progress_text(&item.last_episode, total, episode_list))
                 .unwrap_or_else(|| format!("{} of {}", item.last_episode, total_eps_text));
@@ -148,6 +161,10 @@ pub(super) fn draw_tui(
                 truncate(&item.ani_id, 28),
                 format_last_seen_display_tui(&item.last_seen_at),
             );
+            if let Some(updated_at) = &item.episodes_updated_at {
+                selection_text.push_str("\n\nEpisodes Updated\n");
+                selection_text.push_str(&format_last_seen_display_tui(updated_at));
+            }
             if episode_state.is_some_and(EpisodeListState::is_loading) {
                 selection_text.push_str("\n\nEpisodes\nLoading...");
             }

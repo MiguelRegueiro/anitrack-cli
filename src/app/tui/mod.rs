@@ -15,7 +15,7 @@ use ratatui::widgets::TableState;
 
 use crate::db::Database;
 
-use super::episode::{has_next_episode, has_previous_episode, parse_title_and_total_eps, truncate};
+use super::episode::{has_next_episode, has_previous_episode, truncate};
 use super::tracking::{PlaybackOptions, run_ani_cli_search};
 
 use self::actions::{
@@ -77,6 +77,7 @@ pub(super) struct PendingNotice {
 pub(super) struct EpisodeListFetchResult {
     pub(super) ani_id: String,
     pub(super) episode_list: Option<Vec<String>>,
+    pub(super) total_episodes: Option<u32>,
     pub(super) warning: Option<String>,
 }
 
@@ -139,7 +140,13 @@ pub(crate) fn run_tui(db: &Database, options: PlaybackOptions) -> Result<()> {
     };
 
     loop {
-        drain_episode_fetch_results(&episode_fetch_rx, &mut episode_lists_by_id);
+        let selected_id = table_state
+            .selected()
+            .and_then(|idx| items.get(idx))
+            .map(|item| item.ani_id.clone());
+        if drain_episode_fetch_results(db, &episode_fetch_rx, &mut episode_lists_by_id)? {
+            refresh_items(db, &mut items, &mut table_state, selected_id.as_deref())?;
+        }
         ensure_selected_episode_list(
             &items,
             &table_state,
@@ -281,18 +288,18 @@ pub(crate) fn run_tui(db: &Database, options: PlaybackOptions) -> Result<()> {
                     .get(&selected_item.ani_id)
                     .and_then(EpisodeListState::episode_list);
 
-                if matches!(action, TuiAction::Next) {
-                    let total_eps = parse_title_and_total_eps(&selected_item.title).1;
-                    if !has_next_episode(&selected_item.last_episode, total_eps, episode_list) {
-                        pending_notice = Some(PendingNotice {
-                            message: format!(
-                                "No more episodes available.\n\n{}\n\nPress any key to continue.",
-                                truncate(&selected_item.title, 50)
-                            ),
-                        });
-                        status = status_info("No next episode available.");
-                        continue;
-                    }
+                if matches!(action, TuiAction::Next)
+                    && episode_list.is_some()
+                    && !has_next_episode(&selected_item.last_episode, None, episode_list)
+                {
+                    pending_notice = Some(PendingNotice {
+                        message: format!(
+                            "No more episodes available.\n\n{}\n\nPress any key to continue.",
+                            truncate(&selected_item.title, 50)
+                        ),
+                    });
+                    status = status_info("No next episode available.");
+                    continue;
                 }
 
                 if matches!(action, TuiAction::Previous)
@@ -317,8 +324,12 @@ pub(crate) fn run_tui(db: &Database, options: PlaybackOptions) -> Result<()> {
                 session.resume()?;
                 terminal.clear()?;
 
+                let mut should_refetch_episodes = false;
                 match result {
-                    Ok(msg) => status = status_info(&msg),
+                    Ok(msg) => {
+                        should_refetch_episodes = true;
+                        status = status_info(&msg);
+                    }
                     Err(err) => {
                         let no_previous = matches!(action, TuiAction::Previous)
                             && err.chain().any(|cause| {
@@ -340,6 +351,9 @@ pub(crate) fn run_tui(db: &Database, options: PlaybackOptions) -> Result<()> {
                 }
 
                 refresh_items(db, &mut items, &mut table_state, Some(&selected_id))?;
+                if should_refetch_episodes {
+                    episode_lists_by_id.remove(&selected_id);
+                }
             }
             _ => {}
         }

@@ -158,19 +158,30 @@ pub(super) fn ensure_selected_episode_list(
     std::thread::spawn(move || {
         let outcome = fetch_episode_labels_with_diagnostics(&ani_id, total_hint);
         let warning = (!outcome.warnings.is_empty()).then(|| outcome.warnings.join(" | "));
+        let total_episodes = outcome
+            .episode_list
+            .as_ref()
+            .and_then(|episodes| u32::try_from(episodes.len()).ok())
+            .filter(|count| *count > 0);
         let _ = tx.send(EpisodeListFetchResult {
             ani_id,
             episode_list: outcome.episode_list,
+            total_episodes,
             warning,
         });
     });
 }
 
 pub(super) fn drain_episode_fetch_results(
+    db: &Database,
     rx: &mpsc::Receiver<EpisodeListFetchResult>,
     episode_lists_by_id: &mut HashMap<String, EpisodeListState>,
-) {
+) -> Result<bool> {
+    let mut metadata_updated = false;
     while let Ok(result) = rx.try_recv() {
+        if let Some(total_episodes) = result.total_episodes {
+            metadata_updated |= db.update_episode_metadata(&result.ani_id, total_episodes)?;
+        }
         episode_lists_by_id.insert(
             result.ani_id,
             EpisodeListState::Ready {
@@ -179,4 +190,5 @@ pub(super) fn drain_episode_fetch_results(
             },
         );
     }
+    Ok(metadata_updated)
 }
