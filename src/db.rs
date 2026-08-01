@@ -5,7 +5,7 @@ use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use rusqlite::{Connection, params};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone)]
 pub struct SeenEntry {
@@ -13,6 +13,8 @@ pub struct SeenEntry {
     pub title: String,
     pub last_episode: String,
     pub last_seen_at: String,
+    pub total_episodes: Option<u32>,
+    pub episodes_updated_at: Option<String>,
 }
 
 pub struct Database {
@@ -74,6 +76,18 @@ impl Database {
                     )
                     .context("failed applying migration v2")?;
                 }
+                3 => {
+                    tx.execute_batch(
+                        r#"
+                        ALTER TABLE seen_progress
+                        ADD COLUMN total_episodes INTEGER;
+
+                        ALTER TABLE seen_progress
+                        ADD COLUMN episodes_updated_at TEXT;
+                        "#,
+                    )
+                    .context("failed applying migration v3")?;
+                }
                 _ => {
                     return Err(anyhow!(
                         "missing migration for schema version {next_version}"
@@ -92,18 +106,61 @@ impl Database {
 
     pub fn upsert_seen(&self, ani_id: &str, title: &str, episode: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
+        let derived_total = parse_title_total_episodes(title)
+            .into_iter()
+            .chain(parse_episode_u32(episode))
+            .max();
         self.conn.execute(
             r#"
-            INSERT INTO seen_progress (ani_id, title, last_episode, last_seen_at)
-            VALUES (?1, ?2, ?3, ?4)
+            INSERT INTO seen_progress (
+                ani_id,
+                title,
+                last_episode,
+                last_seen_at,
+                total_episodes,
+                episodes_updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, CASE WHEN ?5 IS NULL THEN NULL ELSE ?4 END)
             ON CONFLICT(ani_id) DO UPDATE SET
                 title = excluded.title,
                 last_episode = excluded.last_episode,
-                last_seen_at = excluded.last_seen_at
+                last_seen_at = excluded.last_seen_at,
+                total_episodes = CASE
+                    WHEN excluded.total_episodes IS NULL THEN seen_progress.total_episodes
+                    WHEN seen_progress.total_episodes IS NULL THEN excluded.total_episodes
+                    ELSE MAX(seen_progress.total_episodes, excluded.total_episodes)
+                END,
+                episodes_updated_at = CASE
+                    WHEN excluded.total_episodes IS NULL THEN seen_progress.episodes_updated_at
+                    WHEN seen_progress.total_episodes IS NOT NULL
+                        AND seen_progress.total_episodes >= excluded.total_episodes
+                        THEN seen_progress.episodes_updated_at
+                    ELSE excluded.episodes_updated_at
+                END
             "#,
-            params![ani_id, title, episode, now],
+            params![ani_id, title, episode, now, derived_total],
         )?;
         Ok(())
+    }
+
+    pub fn update_episode_metadata(&self, ani_id: &str, total_episodes: u32) -> Result<bool> {
+        let now = Utc::now().to_rfc3339();
+        let changed = self.conn.execute(
+            r#"
+            UPDATE seen_progress
+            SET total_episodes = CASE
+                    WHEN total_episodes IS NULL THEN ?2
+                    ELSE MAX(total_episodes, ?2)
+                END,
+                episodes_updated_at = CASE
+                    WHEN total_episodes IS NOT NULL AND total_episodes >= ?2 THEN episodes_updated_at
+                    ELSE ?3
+                END
+            WHERE ani_id = ?1
+            "#,
+            params![ani_id, total_episodes, now],
+        )?;
+        Ok(changed > 0)
     }
 
     pub fn delete_seen(&self, ani_id: &str) -> Result<bool> {
@@ -116,7 +173,7 @@ impl Database {
 
     pub fn last_seen(&self) -> Result<Option<SeenEntry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT ani_id, title, last_episode, last_seen_at FROM seen_progress ORDER BY last_seen_at DESC LIMIT 1",
+            "SELECT ani_id, title, last_episode, last_seen_at, total_episodes, episodes_updated_at FROM seen_progress ORDER BY last_seen_at DESC LIMIT 1",
         )?;
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
@@ -125,6 +182,8 @@ impl Database {
                 title: row.get(1)?,
                 last_episode: row.get(2)?,
                 last_seen_at: row.get(3)?,
+                total_episodes: row.get(4)?,
+                episodes_updated_at: row.get(5)?,
             }));
         }
         Ok(None)
@@ -132,7 +191,7 @@ impl Database {
 
     pub fn list_seen(&self) -> Result<Vec<SeenEntry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT ani_id, title, last_episode, last_seen_at FROM seen_progress ORDER BY last_seen_at DESC",
+            "SELECT ani_id, title, last_episode, last_seen_at, total_episodes, episodes_updated_at FROM seen_progress ORDER BY last_seen_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(SeenEntry {
@@ -140,6 +199,8 @@ impl Database {
                 title: row.get(1)?,
                 last_episode: row.get(2)?,
                 last_seen_at: row.get(3)?,
+                total_episodes: row.get(4)?,
+                episodes_updated_at: row.get(5)?,
             })
         })?;
 
@@ -149,6 +210,21 @@ impl Database {
         }
         Ok(out)
     }
+}
+
+fn parse_title_total_episodes(title: &str) -> Option<u32> {
+    let trimmed = title.trim();
+    let open_idx = trimmed.rfind('(')?;
+    if !trimmed.ends_with(')') {
+        return None;
+    }
+    let inner = trimmed[open_idx + 1..trimmed.len() - 1].trim();
+    let num_str = inner.strip_suffix(" episodes")?;
+    num_str.trim().parse::<u32>().ok()
+}
+
+fn parse_episode_u32(episode: &str) -> Option<u32> {
+    episode.trim().parse::<u32>().ok()
 }
 
 #[cfg(test)]
@@ -180,6 +256,82 @@ mod tests {
         assert_eq!(latest.ani_id, "show-1");
         assert_eq!(latest.title, "Show One Renamed");
         assert_eq!(latest.last_episode, "2");
+    }
+
+    #[test]
+    fn upsert_extracts_title_total_and_raises_it_to_watched_episode() {
+        let db = in_memory_db();
+        db.migrate().expect("migration should succeed");
+
+        db.upsert_seen("show-1", "Show One (11 episodes)", "11")
+            .expect("insert should succeed");
+        db.upsert_seen("show-1", "Show One", "12")
+            .expect("update should succeed");
+
+        let latest = db
+            .last_seen()
+            .expect("query should succeed")
+            .expect("row should exist");
+        assert_eq!(latest.title, "Show One");
+        assert_eq!(latest.last_episode, "12");
+        assert_eq!(latest.total_episodes, Some(12));
+        assert!(latest.episodes_updated_at.is_some());
+    }
+
+    #[test]
+    fn update_episode_metadata_updates_total_without_touching_progress_order() {
+        let db = in_memory_db();
+        db.migrate().expect("migration should succeed");
+
+        db.upsert_seen("show-1", "Show One (11 episodes)", "11")
+            .expect("insert should succeed");
+        let before = db
+            .last_seen()
+            .expect("query should succeed")
+            .expect("row should exist");
+        thread::sleep(Duration::from_millis(2));
+
+        assert!(
+            db.update_episode_metadata("show-1", 12)
+                .expect("metadata update should succeed")
+        );
+
+        let after = db
+            .last_seen()
+            .expect("query should succeed")
+            .expect("row should exist");
+        assert_eq!(after.last_episode, "11");
+        assert_eq!(after.last_seen_at, before.last_seen_at);
+        assert_eq!(after.total_episodes, Some(12));
+        assert!(after.episodes_updated_at > before.episodes_updated_at);
+    }
+
+    #[test]
+    fn episode_total_does_not_move_backward() {
+        let db = in_memory_db();
+        db.migrate().expect("migration should succeed");
+
+        db.upsert_seen("show-1", "Show One (12 episodes)", "12")
+            .expect("insert should succeed");
+        let before = db
+            .last_seen()
+            .expect("query should succeed")
+            .expect("row should exist");
+        thread::sleep(Duration::from_millis(2));
+
+        db.upsert_seen("show-1", "Show One (11 episodes)", "11")
+            .expect("lower title total should not reduce metadata");
+        assert!(
+            db.update_episode_metadata("show-1", 10)
+                .expect("lower metadata update should still find row")
+        );
+
+        let after = db
+            .last_seen()
+            .expect("query should succeed")
+            .expect("row should exist");
+        assert_eq!(after.total_episodes, Some(12));
+        assert_eq!(after.episodes_updated_at, before.episodes_updated_at);
     }
 
     #[test]
@@ -264,6 +416,16 @@ mod tests {
             )
             .expect("legacy row should survive migration");
         assert_eq!(existing_row, 1);
+
+        let metadata_columns: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(1) FROM pragma_table_info('seen_progress') WHERE name IN ('total_episodes', 'episodes_updated_at')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("metadata columns should be queryable");
+        assert_eq!(metadata_columns, 2);
     }
 
     #[test]
@@ -314,6 +476,16 @@ mod tests {
             )
             .expect("v1 row should survive migration");
         assert_eq!(existing_row, 1);
+
+        let metadata_columns: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(1) FROM pragma_table_info('seen_progress') WHERE name IN ('total_episodes', 'episodes_updated_at')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("metadata columns should be queryable");
+        assert_eq!(metadata_columns, 2);
     }
 
     #[test]

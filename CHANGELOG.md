@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Fixed TUI `Select` to pick an episode first, then launch it through ani-cli's history-based path when possible to avoid flaky title-search playback failures.
+- Fixed stale TUI episode totals by storing episode metadata separately from titles, refreshing selected-show metadata in the background, and treating watched progress as a lower bound for displayed totals. ([#11])
 
 ## [0.1.8] - 2026-07-24
 
@@ -180,8 +181,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.8...HEAD
 [0.1.8]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.7...v0.1.8
-[#12]: https://github.com/MiguelRegueiro/anitrack-cli/issues/12
 [#13]: https://github.com/MiguelRegueiro/anitrack-cli/issues/13
+[#12]: https://github.com/MiguelRegueiro/anitrack-cli/issues/12
+[#11]: https://github.com/MiguelRegueiro/anitrack-cli/issues/11
 [0.1.7]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.4...v0.1.5
