@@ -90,6 +90,34 @@ fn parse_hist_map_ignores_malformed_lines() {
 }
 
 #[test]
+fn title_metadata_with_trailing_year_is_removed_for_search() {
+    let title = "Gyakkyou Burai Kaiji: Ultimate Survivor (26 episodes) (2007)";
+    assert_eq!(
+        parse_title_and_total_eps(title),
+        (
+            "Gyakkyou Burai Kaiji: Ultimate Survivor".to_string(),
+            Some(26)
+        )
+    );
+    assert_eq!(
+        sanitize_title_for_search(title),
+        "Gyakkyou Burai Kaiji: Ultimate Survivor"
+    );
+}
+
+#[test]
+fn next_target_episode_handles_integer_and_decimal_labels() {
+    assert_eq!(next_target_episode("3", None).as_deref(), Some("4"));
+    assert_eq!(next_target_episode("3.5", None).as_deref(), Some("4"));
+
+    let episodes = vec!["3".to_string(), "3.5".to_string(), "5".to_string()];
+    assert_eq!(
+        next_target_episode("3.5", Some(&episodes)).as_deref(),
+        Some("5")
+    );
+}
+
+#[test]
 fn detect_changed_latest_returns_most_recent_changed_entry() {
     let mut before = HashMap::new();
     before.insert(
@@ -788,6 +816,11 @@ fn create_fake_ani_cli(root: &Path) -> PathBuf {
     let script = r#"#!/usr/bin/env bash
 set -euo pipefail
 
+if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
+  printf '%s\n' "${ANITRACK_FAKE_VERSION:-4.0.0}"
+  exit 0
+fi
+
 mode="${ANITRACK_FAKE_MODE:-}"
 hist_dir="${ANI_CLI_HIST_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ani-cli}"
 hist_file="${hist_dir}/ani-hsts"
@@ -1056,6 +1089,74 @@ fn integration_select_uses_history_seed_when_episode_list_has_previous_label() {
 
 #[cfg(unix)]
 #[test]
+fn integration_select_legacy_id_uses_direct_episode_with_ani_cli_v5() {
+    let _env_guard = env_lock_guard();
+    let sandbox = TestSandbox::new("select-v5-legacy-id");
+    let db = open_test_db(&sandbox.root);
+    let fake_ani_cli = create_fake_ani_cli(&sandbox.root);
+    let hist_dir = sandbox.root.join("hist");
+    let args_file = sandbox.root.join("args.txt");
+    fs::create_dir_all(&hist_dir).expect("hist directory should be created");
+    db.upsert_seen("LegacyAllAnimeId", "Show One (12 episodes) (2024)", "1")
+        .expect("seed row should be inserted");
+    let item = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should exist");
+    let episodes = vec!["1".to_string(), "2".to_string()];
+
+    let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
+    let _hist = ScopedEnvVar::set("ANI_CLI_HIST_DIR", hist_dir.as_os_str());
+    let _version = ScopedEnvVar::set("ANITRACK_FAKE_VERSION", OsStr::new("5.0.0"));
+    let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("select_success"));
+    let _args = ScopedEnvVar::set("ANITRACK_FAKE_ARGS_FILE", args_file.as_os_str());
+    let _select_id = ScopedEnvVar::set("ANITRACK_FAKE_ANI_ID", OsStr::new("show-one-123"));
+    let _select_title = ScopedEnvVar::set("ANITRACK_FAKE_TITLE", OsStr::new("Show One"));
+    let _select_episode = ScopedEnvVar::set("ANITRACK_FAKE_EPISODE", OsStr::new("2"));
+
+    let outcome = run_ani_cli_select(&item, "2", Some(&episodes), PlaybackOptions::default())
+        .expect("select action should run");
+
+    assert!(outcome.success, "select action should report success");
+    assert_eq!(outcome.final_episode.as_deref(), Some("2"));
+    let args = fs::read_to_string(args_file).expect("fake ani-cli args should be captured");
+    assert_eq!(args.trim(), "Show One -e 2");
+}
+
+#[cfg(unix)]
+#[test]
+fn integration_next_legacy_id_reuses_matching_ani_cli_v5_history() {
+    let _env_guard = env_lock_guard();
+    let sandbox = TestSandbox::new("next-v5-mapped-id");
+    let db = open_test_db(&sandbox.root);
+    let fake_ani_cli = create_fake_ani_cli(&sandbox.root);
+    let hist_dir = sandbox.root.join("hist");
+    let args_file = sandbox.root.join("args.txt");
+    fs::create_dir_all(&hist_dir).expect("hist directory should be created");
+    fs::write(hist_dir.join("ani-hsts"), "1\tshow-one-123\tShow One\n")
+        .expect("v5 history should be seeded");
+    db.upsert_seen("LegacyAllAnimeId", "Show One (12 episodes) (2024)", "1")
+        .expect("seed row should be inserted");
+
+    let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
+    let _hist = ScopedEnvVar::set("ANI_CLI_HIST_DIR", hist_dir.as_os_str());
+    let _version = ScopedEnvVar::set("ANITRACK_FAKE_VERSION", OsStr::new("5.0.0"));
+    let _mode = ScopedEnvVar::set("ANITRACK_FAKE_MODE", OsStr::new("next_success"));
+    let _args = ScopedEnvVar::set("ANITRACK_FAKE_ARGS_FILE", args_file.as_os_str());
+
+    run_next(&db, PlaybackOptions::default()).expect("next command should complete");
+
+    let last_seen = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should exist");
+    assert_eq!(last_seen.last_episode, "2");
+    let args = fs::read_to_string(args_file).expect("fake ani-cli args should be captured");
+    assert_eq!(args.trim(), "-c");
+}
+
+#[cfg(unix)]
+#[test]
 fn integration_previous_updates_progress_when_fake_continue_succeeds() {
     let _env_guard = env_lock_guard();
     let sandbox = TestSandbox::new("previous-success");
@@ -1163,6 +1264,11 @@ fn create_fake_ani_cli(root: &Path) -> PathBuf {
     let ps1_path = root.join("fake-ani-cli.ps1");
     let cmd_script = "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0fake-ani-cli.ps1\"\r\nexit /b %ERRORLEVEL%\r\n";
     let ps1_script = r#"
+if ($args.Count -gt 0 -and ($args[0] -eq "--version" -or $args[0] -eq "-V")) {
+  if ($env:ANITRACK_FAKE_VERSION) { Write-Output $env:ANITRACK_FAKE_VERSION } else { Write-Output "4.0.0" }
+  exit 0
+}
+
 $mode = $env:ANITRACK_FAKE_MODE
 if ($env:ANI_CLI_HIST_DIR) {
   $histDir = $env:ANI_CLI_HIST_DIR
