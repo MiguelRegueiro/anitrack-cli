@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-08-03
+
 ### Added
 - Added forwarding for ani-cli's `--vlc` player flag when requested.
 
 ### Fixed
+- Fixed playback of entries saved by ani-cli 4 after upgrading to ani-cli 5 by matching migrated history entries or falling back to exact title-and-episode playback.
 - Fixed TUI `Select` to pick an episode first, then launch it through ani-cli's history-based path when possible to avoid flaky title-search playback failures.
 - Fixed stale TUI episode totals by storing episode metadata separately from titles, refreshing selected-show metadata in the background, and treating watched progress as a lower bound for displayed totals. ([#11])
 
@@ -179,7 +182,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Right-side episode text now matches progress logic.
 - Polished modal styling/layout for delete confirmation and last-episode notice.
 
-[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.7...v0.1.8
 [#13]: https://github.com/MiguelRegueiro/anitrack-cli/issues/13
 [#12]: https://github.com/MiguelRegueiro/anitrack-cli/issues/12
