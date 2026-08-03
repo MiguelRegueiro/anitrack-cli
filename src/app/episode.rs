@@ -8,20 +8,48 @@ use crate::http::post_json_with_retries;
 
 pub(crate) fn parse_title_and_total_eps(title: &str) -> (String, Option<u32>) {
     let trimmed = title.trim();
-    let Some(open_idx) = trimmed.rfind('(') else {
-        return (trimmed.to_string(), None);
-    };
-    if !trimmed.ends_with(')') {
-        return (trimmed.to_string(), None);
+    let mut remaining = trimmed;
+    let mut total = None;
+
+    // Older ani-cli history titles can end in both an episode count and a year,
+    // for example "Show (12 episodes) (2024)". Walk all recognized metadata
+    // suffixes so those entries remain searchable after ani-cli changes source.
+    while let Some((prefix, suffix)) = split_trailing_parenthetical(remaining) {
+        if let Some(value) = suffix
+            .strip_suffix(" episodes")
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+        {
+            total = Some(value);
+            remaining = prefix;
+            continue;
+        }
+        if is_year_suffix(suffix) {
+            remaining = prefix;
+            continue;
+        }
+        break;
     }
-    let inner = trimmed[open_idx + 1..trimmed.len() - 1].trim();
-    let Some(num_str) = inner.strip_suffix(" episodes") else {
-        return (trimmed.to_string(), None);
-    };
-    let Ok(num) = num_str.trim().parse::<u32>() else {
-        return (trimmed.to_string(), None);
-    };
-    (trimmed[..open_idx].trim().to_string(), Some(num))
+
+    if total.is_some() {
+        (remaining.to_string(), total)
+    } else {
+        (trimmed.to_string(), None)
+    }
+}
+
+fn split_trailing_parenthetical(raw: &str) -> Option<(&str, &str)> {
+    let trimmed = raw.trim();
+    if !trimmed.ends_with(')') {
+        return None;
+    }
+    let open_idx = trimmed.rfind('(')?;
+    let prefix = trimmed[..open_idx].trim_end();
+    let suffix = trimmed[open_idx + 1..trimmed.len() - 1].trim();
+    Some((prefix, suffix))
+}
+
+fn is_year_suffix(raw: &str) -> bool {
+    raw.len() == 4 && raw.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 pub(crate) fn parse_episode_f64(ep: &str) -> Option<f64> {
@@ -213,6 +241,25 @@ pub(crate) fn replay_seed_episode(
     }
 }
 
+pub(crate) fn next_target_episode(
+    last_episode: &str,
+    episode_list: Option<&[String]>,
+) -> Option<String> {
+    if let Some(episodes) = episode_list
+        && let Some(idx) = episodes
+            .iter()
+            .position(|episode| episode_labels_match(episode, last_episode))
+    {
+        return episodes.get(idx + 1).cloned();
+    }
+
+    let current = parse_episode_f64(last_episode)?;
+    if current < 0.0 {
+        return None;
+    }
+    integer_episode_label(current.floor() + 1.0)
+}
+
 pub(crate) fn previous_target_episode(
     last_episode: &str,
     episode_list: Option<&[String]>,
@@ -384,13 +431,25 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
 
 pub(crate) fn sanitize_title_for_search(title: &str) -> String {
     let trimmed = title.trim();
-    if let Some(open_idx) = trimmed.rfind('(')
-        && trimmed.ends_with(')')
-        && trimmed[open_idx..].contains("episodes")
-    {
-        return trimmed[..open_idx].trim().to_string();
+    let mut remaining = trimmed;
+    let mut removed_metadata = false;
+
+    while let Some((prefix, suffix)) = split_trailing_parenthetical(remaining) {
+        let is_episode_count = suffix
+            .strip_suffix(" episodes")
+            .is_some_and(|raw| raw.trim().parse::<u32>().is_ok());
+        if !is_episode_count && !is_year_suffix(suffix) {
+            break;
+        }
+        remaining = prefix;
+        removed_metadata = true;
     }
-    trimmed.to_string()
+
+    if removed_metadata {
+        remaining.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 pub(crate) fn parse_episode_u32(ep: &str) -> Option<u32> {
