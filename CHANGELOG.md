@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Prevented successful direct-episode playback from replacing progress with an unchanged, stale ani-cli history episode after show IDs or titles migrate.
+- Added ani-cli 5-native episode metadata loading so TUI episode selection works for its current history IDs, including when Select is pressed before background loading finishes.
+- Pinned ani-cli 5 title-search fallbacks to the top result so Replay, Previous, and Select do not unexpectedly open the show-selection menu for migrated entries.
+
 ## [0.1.9] - 2026-08-03
 
 ### Added

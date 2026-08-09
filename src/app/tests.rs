@@ -106,6 +106,28 @@ fn title_metadata_with_trailing_year_is_removed_for_search() {
 }
 
 #[test]
+fn ani_cli_v5_episode_metadata_uses_numeric_id_and_sorts_labels() {
+    assert_eq!(
+        ani_cli_v5_source_id("classroom-of-the-elite-1006"),
+        Some("1006")
+    );
+    assert_eq!(ani_cli_v5_source_id("LegacyAllAnimeId"), None);
+
+    let raw = r#"{
+        "episodes": [
+            {"id": 21932, "number": 3},
+            {"id": 21930, "number": 1},
+            {"id": 21931, "number": 2},
+            {"id": 99999, "number": 2}
+        ]
+    }"#;
+    assert_eq!(
+        parse_ani_cli_v5_episode_labels(raw),
+        Some(vec!["1".to_string(), "2".to_string(), "3".to_string()])
+    );
+}
+
+#[test]
 fn next_target_episode_handles_integer_and_decimal_labels() {
     assert_eq!(next_target_episode("3", None).as_deref(), Some("4"));
     assert_eq!(next_target_episode("3.5", None).as_deref(), Some("4"));
@@ -1011,6 +1033,54 @@ fn integration_replay_updates_progress_with_fake_continue() {
 
 #[cfg(unix)]
 #[test]
+fn integration_replay_ignores_stale_legacy_history_episode() {
+    let _env_guard = env_lock_guard();
+    let sandbox = TestSandbox::new("replay-v5-stale-legacy-history");
+    let db = open_test_db(&sandbox.root);
+    let fake_ani_cli = create_fake_ani_cli(&sandbox.root);
+    let hist_dir = sandbox.root.join("hist");
+    let args_file = sandbox.root.join("args.txt");
+    fs::create_dir_all(&hist_dir).expect("hist directory should be created");
+    fs::write(
+        hist_dir.join("ani-hsts"),
+        concat!(
+            "3\tLegacyAllAnimeId\tGyakkyou Burai Kaiji: Ultimate Survivor (26 episodes) (2007)\n",
+            "26\tkaiji-ultimate-survivor-2607\tKaiji: Ultimate Survivor\n",
+        ),
+    )
+    .expect("stale and migrated history entries should be seeded");
+    db.upsert_seen(
+        "LegacyAllAnimeId",
+        "Gyakkyou Burai Kaiji: Ultimate Survivor (26 episodes) (2007)",
+        "26",
+    )
+    .expect("seed row should be inserted");
+
+    let _bin = ScopedEnvVar::set("ANI_TRACK_ANI_CLI_BIN", fake_ani_cli.as_os_str());
+    let _hist = ScopedEnvVar::set("ANI_CLI_HIST_DIR", hist_dir.as_os_str());
+    let _version = ScopedEnvVar::set("ANITRACK_FAKE_VERSION", OsStr::new("5.0.0"));
+    let _mode = ScopedEnvVar::set(
+        "ANITRACK_FAKE_MODE",
+        OsStr::new("success_without_history_change"),
+    );
+    let _args = ScopedEnvVar::set("ANITRACK_FAKE_ARGS_FILE", args_file.as_os_str());
+
+    run_replay(&db, PlaybackOptions::default()).expect("replay command should complete");
+
+    let last_seen = db
+        .last_seen()
+        .expect("db query should succeed")
+        .expect("entry should exist");
+    assert_eq!(last_seen.last_episode, "26");
+    let args = fs::read_to_string(args_file).expect("fake ani-cli args should be captured");
+    assert_eq!(
+        args.trim(),
+        "-S 1 Gyakkyou Burai Kaiji: Ultimate Survivor -e 26"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn integration_select_updates_progress_with_override_without_network() {
     let _env_guard = env_lock_guard();
     let sandbox = TestSandbox::new("select-success");
@@ -1120,7 +1190,7 @@ fn integration_select_legacy_id_uses_direct_episode_with_ani_cli_v5() {
     assert!(outcome.success, "select action should report success");
     assert_eq!(outcome.final_episode.as_deref(), Some("2"));
     let args = fs::read_to_string(args_file).expect("fake ani-cli args should be captured");
-    assert_eq!(args.trim(), "Show One -e 2");
+    assert_eq!(args.trim(), "-S 1 Show One -e 2");
 }
 
 #[cfg(unix)]

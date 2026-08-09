@@ -11,8 +11,9 @@ use anyhow::{Context, Result, anyhow};
 use std::os::unix::process::ExitStatusExt;
 
 use super::super::episode::{
-    fetch_episode_labels_with_diagnostics, next_target_episode, parse_title_and_total_eps,
-    previous_seed_episode, previous_target_episode, replay_seed_episode, sanitize_title_for_search,
+    ani_cli_v5_source_id, fetch_episode_labels_with_diagnostics, next_target_episode,
+    parse_title_and_total_eps, previous_seed_episode, previous_target_episode, replay_seed_episode,
+    sanitize_title_for_search,
 };
 use super::api::{normalize_title_for_match, resolve_select_nth_for_item_with_diagnostics};
 use super::history::{
@@ -165,12 +166,7 @@ fn uses_new_ani_cli_history(bin: &Path) -> bool {
 }
 
 fn is_new_ani_cli_history_id(id: &str) -> bool {
-    // ani-cli 5 search results use a slug followed by the numeric source ID.
-    id.rsplit_once('-').is_some_and(|(slug, numeric_id)| {
-        !slug.is_empty()
-            && !numeric_id.is_empty()
-            && numeric_id.bytes().all(|byte| byte.is_ascii_digit())
-    })
+    ani_cli_v5_source_id(id).is_some()
 }
 
 fn titles_match(left: &str, right: &str) -> bool {
@@ -186,9 +182,9 @@ fn matching_new_history_entry(item: &SeenEntry) -> Option<super::HistEntry> {
 
 fn runtime_select_nth(item: &SeenEntry) -> Option<u32> {
     if uses_new_ani_cli_history(&resolve_ani_cli_bin()) {
-        // The resolver uses ani-cli 4's AllAnime source. ani-cli 5 has a different
-        // result set, so forwarding that index could silently select another show.
-        return None;
+        // ani-cli 5 searches its own source using the full tracked title. Pin the
+        // top result so migrated entries never fall into an interactive show menu.
+        return Some(1);
     }
     let resolution = resolve_select_nth_for_item_with_diagnostics(item);
     emit_warnings(&resolution.warnings);
@@ -236,7 +232,12 @@ fn run_ani_cli_continue_to(
             })?;
             &derived_target
         };
-        return run_ani_cli_episode_with_global_tracking(item, target_episode, None, options);
+        return run_ani_cli_episode_with_global_tracking(
+            item,
+            target_episode,
+            runtime_select_nth(item),
+            options,
+        );
     }
 
     run_ani_cli_continue_seeded(
@@ -317,7 +318,6 @@ pub(crate) fn run_ani_cli_episode(
 }
 
 fn run_with_global_tracking(
-    item: &SeenEntry,
     requested_episode: &str,
     run_cmd: impl FnOnce() -> Result<ExitStatus>,
 ) -> Result<PlaybackOutcome> {
@@ -336,20 +336,9 @@ fn run_with_global_tracking(
             detect_latest_watch_event(&before, &before_ordered, &after_read.ordered_entries);
         changed
             .map(|entry| entry.ep)
-            .or_else(|| {
-                after_read
-                    .entries
-                    .get(&item.ani_id)
-                    .map(|entry| entry.ep.clone())
-            })
-            .or_else(|| {
-                after_read
-                    .ordered_entries
-                    .iter()
-                    .rev()
-                    .find(|entry| titles_match(&entry.title, &item.title))
-                    .map(|entry| entry.ep.clone())
-            })
+            // An unchanged history entry may be stale, especially after ani-cli
+            // migrates a show to a new ID or title. The explicit episode is the
+            // authoritative fallback for a successful direct-episode command.
             .or_else(|| Some(requested_episode.to_string()))
     } else {
         None
@@ -369,7 +358,7 @@ pub(crate) fn run_ani_cli_episode_with_global_tracking(
     options: PlaybackOptions,
 ) -> Result<PlaybackOutcome> {
     let title = sanitize_title_for_search(&item.title);
-    run_with_global_tracking(item, episode, || {
+    run_with_global_tracking(episode, || {
         run_ani_cli_episode(&title, select_nth, episode, options)
     })
 }

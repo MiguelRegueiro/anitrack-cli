@@ -8,7 +8,10 @@ use ratatui::widgets::TableState;
 
 use crate::db::{Database, SeenEntry};
 
-use super::super::episode::{fetch_episode_labels_with_diagnostics, parse_title_and_total_eps};
+use super::super::episode::{
+    EpisodeLabelFetchOutcome, fetch_episode_labels_with_diagnostics, parse_episode_f64,
+    parse_title_and_total_eps,
+};
 use super::super::tracking::{
     PlaybackOptions, PlaybackOutcome, playback_failure_message, run_ani_cli_continue,
     run_ani_cli_previous, run_ani_cli_replay, run_ani_cli_select,
@@ -93,17 +96,53 @@ pub(super) fn run_selected_action(
             })
         }
         TuiAction::Select => {
-            let episodes =
-                episode_list.ok_or_else(|| anyhow!("episode list is still loading/unavailable"))?;
-            let Some(episode) = prompt_episode_selection(episodes)? else {
+            // A user can activate Select before the background metadata request
+            // finishes. Resolve it synchronously while the TUI is suspended so
+            // the action does not fail just because the list was still loading.
+            let episodes = select_episode_labels(item, episode_list, |ani_id, total_hint| {
+                fetch_episode_labels_with_diagnostics(ani_id, total_hint)
+            })?;
+            let Some(episode) = prompt_episode_selection(&episodes)? else {
                 return Ok(format!("Select canceled: {}", item.title));
             };
-            let outcome = run_ani_cli_select(item, &episode, episode_list, options)?;
+            let outcome = run_ani_cli_select(item, &episode, Some(&episodes), options)?;
             apply_outcome(db, item, outcome, |ep| {
                 format!("Select finished: {} now on episode {ep}", item.title)
             })
         }
     }
+}
+
+fn episode_total_hint(item: &SeenEntry) -> Option<u32> {
+    parse_title_and_total_eps(&item.title).1.or_else(|| {
+        // `total_episodes` is also raised to the watched episode, so an equal
+        // value is not evidence that the show ends there. Only use cached
+        // metadata as a numeric fallback when it extends beyond progress.
+        item.total_episodes.filter(|total| {
+            parse_episode_f64(&item.last_episode)
+                .is_some_and(|last_episode| last_episode < f64::from(*total))
+        })
+    })
+}
+
+fn select_episode_labels(
+    item: &SeenEntry,
+    episode_list: Option<&[String]>,
+    fetch: impl FnOnce(&str, Option<u32>) -> EpisodeLabelFetchOutcome,
+) -> Result<Vec<String>> {
+    if let Some(episodes) = episode_list {
+        return Ok(episodes.to_vec());
+    }
+
+    let outcome = fetch(&item.ani_id, episode_total_hint(item));
+    outcome.episode_list.ok_or_else(|| {
+        let detail = if outcome.warnings.is_empty() {
+            "no episode metadata was returned".to_string()
+        } else {
+            outcome.warnings.join(" | ")
+        };
+        anyhow!("episode list unavailable: {detail}")
+    })
 }
 
 fn prompt_episode_selection(episodes: &[String]) -> Result<Option<String>> {
@@ -153,7 +192,7 @@ pub(super) fn ensure_selected_episode_list(
 
     episode_lists_by_id.insert(item.ani_id.clone(), EpisodeListState::Loading);
     let ani_id = item.ani_id.clone();
-    let total_hint = parse_title_and_total_eps(&item.title).1;
+    let total_hint = episode_total_hint(item);
     let tx = tx.clone();
     std::thread::spawn(move || {
         let outcome = fetch_episode_labels_with_diagnostics(&ani_id, total_hint);
@@ -191,4 +230,34 @@ pub(super) fn drain_episode_fetch_results(
         );
     }
     Ok(metadata_updated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn select_fetches_episode_labels_when_background_list_is_absent() {
+        let item = SeenEntry {
+            ani_id: "classroom-of-the-elite-1006".to_string(),
+            title: "Classroom of the Elite".to_string(),
+            last_episode: "2".to_string(),
+            last_seen_at: "2026-08-09T00:00:00+00:00".to_string(),
+            total_episodes: Some(2),
+            episodes_updated_at: None,
+        };
+
+        let episodes = select_episode_labels(&item, None, |ani_id, total_hint| {
+            assert_eq!(ani_id, "classroom-of-the-elite-1006");
+            assert_eq!(total_hint, None);
+            EpisodeLabelFetchOutcome {
+                episode_list: Some((1..=12).map(|episode| episode.to_string()).collect()),
+                warnings: Vec::new(),
+            }
+        })
+        .expect("Select should synchronously fetch a missing episode list");
+
+        assert_eq!(episodes.len(), 12);
+        assert_eq!(episodes.last().map(String::as_str), Some("12"));
+    }
 }

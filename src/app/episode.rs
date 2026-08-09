@@ -1,10 +1,15 @@
 use std::cmp::Ordering;
+use std::env;
+use std::ffi::OsString;
+use std::process::Command;
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
 use serde_json::{Value, json};
 
 use crate::http::post_json_with_retries;
+
+const ANI_CLI_V5_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 pub(crate) fn parse_title_and_total_eps(title: &str) -> (String, Option<u32>) {
     let trimmed = title.trim();
@@ -135,6 +140,98 @@ pub(crate) fn fallback_numeric_episode_labels(total_hint: Option<u32>) -> Option
     (total > 0).then(|| (1..=total).map(|episode| episode.to_string()).collect())
 }
 
+pub(crate) fn ani_cli_v5_source_id(ani_id: &str) -> Option<&str> {
+    let (slug, numeric_id) = ani_id.rsplit_once('-')?;
+    (!slug.is_empty()
+        && !numeric_id.is_empty()
+        && numeric_id.bytes().all(|byte| byte.is_ascii_digit()))
+    .then_some(numeric_id)
+}
+
+pub(crate) fn parse_ani_cli_v5_episode_labels(raw: &str) -> Option<Vec<String>> {
+    let value: Value = serde_json::from_str(raw).ok()?;
+    let items = value.get("episodes")?.as_array()?;
+    let mut episodes = items
+        .iter()
+        .filter_map(|item| match item.get("number")? {
+            Value::Number(number) => Some(number.to_string()),
+            Value::String(number) => Some(number.trim().to_string()),
+            _ => None,
+        })
+        .filter(|episode| !episode.is_empty())
+        .collect::<Vec<_>>();
+    if episodes.is_empty() {
+        return None;
+    }
+    episodes.sort_by(|left, right| compare_episode_labels(left, right));
+    episodes.dedup_by(|left, right| episode_labels_match(left, right));
+    Some(episodes)
+}
+
+fn fetch_ani_cli_v5_episode_metadata(url: &str) -> Result<String, String> {
+    let candidates = env::var_os("ANI_TRACK_CURL_BIN")
+        .map(|bin| vec![bin])
+        .unwrap_or_else(|| {
+            [
+                "curl_firefox135",
+                "curl_chrome136",
+                "curl_chrome116",
+                "curl_ff117",
+                "curl",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect()
+        });
+    let mut last_error = None;
+
+    for bin in candidates {
+        let output = match Command::new(&bin)
+            .args([
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--location",
+                "--max-time",
+                "10",
+                "--retry",
+                "2",
+                "--user-agent",
+                ANI_CLI_V5_USER_AGENT,
+                url,
+            ])
+            .output()
+        {
+            Ok(output) => output,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                last_error = Some(format!("failed to launch {}: {err}", bin.to_string_lossy()));
+                continue;
+            }
+        };
+
+        if output.status.success() {
+            return String::from_utf8(output.stdout)
+                .map_err(|err| format!("{} returned invalid UTF-8: {err}", bin.to_string_lossy()));
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim().chars().take(240).collect::<String>();
+        last_error = Some(format!(
+            "{} exited with {}{}",
+            bin.to_string_lossy(),
+            output.status,
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ));
+    }
+
+    Err(last_error.unwrap_or_else(|| "no compatible curl executable was found".to_string()))
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct EpisodeLabelFetchOutcome {
     pub(crate) episode_list: Option<Vec<String>>,
@@ -145,6 +242,30 @@ pub(crate) fn fetch_episode_labels_with_diagnostics(
     ani_id: &str,
     total_hint: Option<u32>,
 ) -> EpisodeLabelFetchOutcome {
+    if let Some(source_id) = ani_cli_v5_source_id(ani_id) {
+        let url = format!("https://anidb.app/api/frontend/anime/{source_id}/episodes");
+        return match fetch_ani_cli_v5_episode_metadata(&url) {
+            Ok(raw) => match parse_ani_cli_v5_episode_labels(&raw) {
+                Some(episode_list) => EpisodeLabelFetchOutcome {
+                    episode_list: Some(episode_list),
+                    warnings: Vec::new(),
+                },
+                None => EpisodeLabelFetchOutcome {
+                    episode_list: fallback_numeric_episode_labels(total_hint),
+                    warnings: vec![format!(
+                        "ani-cli 5 episode metadata response for {ani_id} did not contain usable episode labels"
+                    )],
+                },
+            },
+            Err(err) => EpisodeLabelFetchOutcome {
+                episode_list: fallback_numeric_episode_labels(total_hint),
+                warnings: vec![format!(
+                    "ani-cli 5 episode metadata request failed for {ani_id}: {err}"
+                )],
+            },
+        };
+    }
+
     let query = "query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail }}";
     let body = json!({
         "variables": {
