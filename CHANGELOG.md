@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-08-11
+
 ### Fixed
 - Prevented successful direct-episode playback from replacing progress with an unchanged, stale ani-cli history episode after show IDs or titles migrate.
 - Added ani-cli 5-native episode metadata loading so TUI episode selection works for its current history IDs, including when Select is pressed before background loading finishes.
@@ -187,7 +189,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Right-side episode text now matches progress logic.
 - Polished modal styling/layout for delete confirmation and last-episode notice.
 
-[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.7...v0.1.8
 [#13]: https://github.com/MiguelRegueiro/anitrack-cli/issues/13
