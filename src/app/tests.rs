@@ -106,24 +106,28 @@ fn title_metadata_with_trailing_year_is_removed_for_search() {
 }
 
 #[test]
-fn ani_cli_v5_episode_metadata_uses_numeric_id_and_sorts_labels() {
+fn ani_cli_v5_episode_metadata_parses_hianime_labels_and_sorts_them() {
     assert_eq!(
         ani_cli_v5_source_id("classroom-of-the-elite-1006"),
         Some("1006")
     );
     assert_eq!(ani_cli_v5_source_id("LegacyAllAnimeId"), None);
 
-    let raw = r#"{
-        "episodes": [
-            {"id": 21932, "number": 3},
-            {"id": 21930, "number": 1},
-            {"id": 21931, "number": 2},
-            {"id": 99999, "number": 2}
-        ]
-    }"#;
+    let raw = r#"
+        <a class="ep-item" data-number="3" data-id="21932"></a>
+        <a class="ep-item" data-number="1" data-id="21930"></a>
+        <a class="ep-item" data-number="2" data-id="21931"></a>
+        <a class="ep-item" data-number="2" data-id="99999"></a>
+        <a class=\"ep-item\" data-number=\"13.5\" data-id=\"99998\"></a>
+    "#;
     assert_eq!(
         parse_ani_cli_v5_episode_labels(raw),
-        Some(vec!["1".to_string(), "2".to_string(), "3".to_string()])
+        Some(vec![
+            "1".to_string(),
+            "2".to_string(),
+            "3".to_string(),
+            "13.5".to_string(),
+        ])
     );
 }
 
@@ -871,6 +875,7 @@ case "${mode}" in
     printf '%s\t%s\t%s\n' "${episode}" "${ani_id}" "${title}" > "${hist_file}"
     ;;
   next_fail|previous_fail)
+    printf '\033[2K\r\033[1;31mConnection error: could not fetch https://hianime.at/search?keyword=Test (no HTTP response; curl exit 28)\033[0m\n' >&2
     exit 1
     ;;
 esac
@@ -1195,7 +1200,7 @@ fn integration_select_legacy_id_uses_direct_episode_with_ani_cli_v5() {
 
 #[cfg(unix)]
 #[test]
-fn integration_next_legacy_id_reuses_matching_ani_cli_v5_history() {
+fn integration_next_uses_direct_episode_flow_with_ani_cli_v5_history() {
     let _env_guard = env_lock_guard();
     let sandbox = TestSandbox::new("next-v5-mapped-id");
     let db = open_test_db(&sandbox.root);
@@ -1222,7 +1227,7 @@ fn integration_next_legacy_id_reuses_matching_ani_cli_v5_history() {
         .expect("entry should exist");
     assert_eq!(last_seen.last_episode, "2");
     let args = fs::read_to_string(args_file).expect("fake ani-cli args should be captured");
-    assert_eq!(args.trim(), "-c");
+    assert_eq!(args.trim(), "-S 1 Show One -e 2");
 }
 
 #[cfg(unix)]
@@ -1316,8 +1321,8 @@ fn integration_previous_keeps_progress_when_playback_fails() {
             .failure_detail
             .as_deref()
             .unwrap_or_default()
-            .contains("possible network outage or interrupted playback"),
-        "failure detail should include actionable hint: {:?}",
+            .contains("hianime.at request failed (no HTTP response; curl exit 28)"),
+        "failure detail should retain a concise ani-cli error: {:?}",
         outcome.failure_detail
     );
 

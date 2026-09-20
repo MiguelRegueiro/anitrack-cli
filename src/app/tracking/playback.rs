@@ -4,18 +4,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::process::{Command as ProcessCommand, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 
 use super::super::episode::{
-    ani_cli_v5_source_id, fetch_episode_labels_with_diagnostics, next_target_episode,
-    parse_title_and_total_eps, previous_seed_episode, previous_target_episode, replay_seed_episode,
-    sanitize_title_for_search,
+    fetch_episode_labels_with_diagnostics, next_target_episode, parse_title_and_total_eps,
+    previous_seed_episode, previous_target_episode, replay_seed_episode, sanitize_title_for_search,
 };
-use super::api::{normalize_title_for_match, resolve_select_nth_for_item_with_diagnostics};
+use super::api::resolve_select_nth_for_item_with_diagnostics;
 use super::history::{
     ani_cli_histfile, append_history_warnings, detect_latest_watch_event,
     detect_latest_watch_event_from_logs_with_diagnostics, history_file_touched, read_hist_map,
@@ -31,7 +31,7 @@ fn emit_warnings(warnings: &[String]) {
     }
 }
 
-fn playback_failure_detail(status: &ExitStatus) -> String {
+fn playback_failure_detail(status: &ExitStatus, stderr: &str) -> String {
     let base = if let Some(code) = status.code() {
         format!("ani-cli exited with code {code}")
     } else {
@@ -49,11 +49,113 @@ fn playback_failure_detail(status: &ExitStatus) -> String {
         }
     };
 
-    if status.code() == Some(1) {
+    if let Some(detail) = stderr
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(strip_terminal_controls)
+        .filter(|line| !line.is_empty())
+    {
+        format!("{base}: {detail}")
+    } else if status.code() == Some(1) {
         format!("{base}; possible network outage or interrupted playback")
     } else {
         base
     }
+}
+
+fn strip_terminal_controls(raw: &str) -> String {
+    let mut clean = String::new();
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            // Consume a complete ANSI CSI escape sequence, including the
+            // parameter bytes (`[2K`, `[1;31m`, and so on).
+            if let Some('[') = chars.next() {
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if !ch.is_control() {
+            clean.push(ch);
+        }
+    }
+    concise_ani_cli_error(clean.trim())
+}
+
+fn concise_ani_cli_error(detail: &str) -> String {
+    const CONNECTION_ERROR: &str = "Connection error: could not fetch ";
+    if let Some(url_and_reason) = detail.strip_prefix(CONNECTION_ERROR) {
+        let host = url_and_reason
+            .strip_prefix("https://")
+            .or_else(|| url_and_reason.strip_prefix("http://"))
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or("upstream");
+        let reason = url_and_reason
+            .rsplit_once('(')
+            .and_then(|(_, reason)| reason.strip_suffix(')'))
+            .unwrap_or("no response");
+        return format!("{host} request failed ({reason})");
+    }
+
+    detail.chars().take(360).collect()
+}
+
+struct AniCliExit {
+    status: ExitStatus,
+    stderr: String,
+}
+
+fn run_ani_cli_with_stderr(mut cmd: ProcessCommand) -> Result<AniCliExit> {
+    cmd.stderr(Stdio::piped());
+    let mut child = cmd.spawn().context("failed to spawn ani-cli")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("failed to capture ani-cli stderr")?;
+    let stderr_reader = thread::spawn(move || {
+        use std::io::Read;
+
+        let mut stderr = stderr;
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let status = child.wait().context("failed waiting on ani-cli")?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| anyhow!("failed joining ani-cli stderr reader"))?
+        .context("failed reading ani-cli stderr")?;
+
+    Ok(AniCliExit {
+        status,
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+fn is_transient_hianime_failure(exit: &AniCliExit) -> bool {
+    !exit.status.success()
+        && exit
+            .stderr
+            .contains("Connection error: could not fetch https://hianime.at/")
+}
+
+fn run_ani_cli_with_one_transient_retry(
+    mut build_command: impl FnMut() -> ProcessCommand,
+) -> Result<AniCliExit> {
+    let first = run_ani_cli_with_stderr(build_command())?;
+    if !is_transient_hianime_failure(&first) {
+        return Ok(first);
+    }
+
+    // ani-cli reports HiAnime transport failures as exit code 1. Retrying once
+    // is safe: no player or history update occurs before its request succeeds.
+    thread::sleep(Duration::from_secs(1));
+    run_ani_cli_with_stderr(build_command())
 }
 
 fn append_mode_args(cmd: &mut ProcessCommand, options: PlaybackOptions) {
@@ -165,25 +267,11 @@ fn uses_new_ani_cli_history(bin: &Path) -> bool {
     ani_cli_major_version(bin).is_some_and(|major| major >= 5)
 }
 
-fn is_new_ani_cli_history_id(id: &str) -> bool {
-    ani_cli_v5_source_id(id).is_some()
-}
-
-fn titles_match(left: &str, right: &str) -> bool {
-    normalize_title_for_match(left) == normalize_title_for_match(right)
-}
-
-fn matching_new_history_entry(item: &SeenEntry) -> Option<super::HistEntry> {
-    let history = read_hist_map(&ani_cli_histfile());
-    history.ordered_entries.into_iter().rev().find(|entry| {
-        is_new_ani_cli_history_id(&entry.id) && titles_match(&entry.title, &item.title)
-    })
-}
-
 fn runtime_select_nth(item: &SeenEntry) -> Option<u32> {
     if uses_new_ani_cli_history(&resolve_ani_cli_bin()) {
-        // ani-cli 5 searches its own source using the full tracked title. Pin the
-        // top result so migrated entries never fall into an interactive show menu.
+        // ani-cli 5 rejects seeded temporary history entries even when they
+        // contain its current source IDs. Its first search result is the only
+        // non-interactive route for title-and-episode playback.
         return Some(1);
     }
     let resolution = resolve_select_nth_for_item_with_diagnostics(item);
@@ -206,20 +294,9 @@ fn run_ani_cli_continue_to(
     options: PlaybackOptions,
 ) -> Result<PlaybackOutcome> {
     let ani_cli_bin = resolve_ani_cli_bin();
-    if uses_new_ani_cli_history(&ani_cli_bin) && !is_new_ani_cli_history_id(&item.ani_id) {
-        if let Some(current) = matching_new_history_entry(item) {
-            return run_ani_cli_continue_seeded(
-                &ani_cli_bin,
-                &current.id,
-                &current.title,
-                stored_episode,
-                options,
-            );
-        }
-
-        // A legacy AllAnime ID cannot be continued by ani-cli 5. Search by the
-        // cleaned title and request the intended episode; ani-cli will then write
-        // its current ID to the normal history for subsequent actions.
+    if uses_new_ani_cli_history(&ani_cli_bin) {
+        // Do not use `-c`: ani-cli 5 migrates/rejects the temporary history
+        // entry before playback and reports "No unwatched series in history".
         let derived_target;
         let target_episode = if let Some(target_episode) = target_episode {
             target_episode
@@ -267,17 +344,17 @@ fn run_ani_cli_continue_seeded(
 
     // Use plain .status() rather than run_interactive_cmd: ani-cli -c operates non-interactively
     // using the seeded temp history to skip the search prompt, so TTY foreground transfer is not needed.
-    let mut cmd = ProcessCommand::new(ani_cli_bin);
-    append_mode_args(&mut cmd, options);
-    let status = cmd
-        .arg("-c")
-        .env("ANI_CLI_HIST_DIR", temp_hist_dir.path())
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .with_context(|| format!("failed to launch {}", ani_cli_bin.display()))?;
-    let success = status.success();
+    let exit = run_ani_cli_with_one_transient_retry(|| {
+        let mut cmd = ProcessCommand::new(ani_cli_bin);
+        append_mode_args(&mut cmd, options);
+        cmd.arg("-c")
+            .env("ANI_CLI_HIST_DIR", temp_hist_dir.path())
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit());
+        cmd
+    })
+    .with_context(|| format!("failed to launch {}", ani_cli_bin.display()))?;
+    let success = exit.status.success();
     let final_episode = if success {
         let hist_read = read_hist_map(&histfile);
         emit_warnings(&hist_read.warnings);
@@ -289,37 +366,36 @@ fn run_ani_cli_continue_seeded(
     Ok(PlaybackOutcome {
         success,
         final_episode,
-        failure_detail: (!success).then(|| playback_failure_detail(&status)),
+        failure_detail: (!success).then(|| playback_failure_detail(&exit.status, &exit.stderr)),
     })
 }
 
-pub(crate) fn run_ani_cli_episode(
+fn run_ani_cli_episode(
     title: &str,
     select_nth: Option<u32>,
     episode: &str,
     options: PlaybackOptions,
-) -> Result<ExitStatus> {
+) -> Result<AniCliExit> {
     let ani_cli_bin = resolve_ani_cli_bin();
-    let mut cmd = ProcessCommand::new(&ani_cli_bin);
-    append_mode_args(&mut cmd, options);
-    if let Some(index) = select_nth {
-        cmd.arg("-S").arg(index.to_string());
-    }
-    let status = cmd
-        .arg(title)
-        .arg("-e")
-        .arg(episode)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .with_context(|| format!("failed to launch {}", ani_cli_bin.display()))?;
-    Ok(status)
+    run_ani_cli_with_one_transient_retry(|| {
+        let mut cmd = ProcessCommand::new(&ani_cli_bin);
+        append_mode_args(&mut cmd, options);
+        if let Some(index) = select_nth {
+            cmd.arg("-S").arg(index.to_string());
+        }
+        cmd.arg(title)
+            .arg("-e")
+            .arg(episode)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit());
+        cmd
+    })
+    .with_context(|| format!("failed to launch {}", ani_cli_bin.display()))
 }
 
 fn run_with_global_tracking(
     requested_episode: &str,
-    run_cmd: impl FnOnce() -> Result<ExitStatus>,
+    run_cmd: impl FnOnce() -> Result<AniCliExit>,
 ) -> Result<PlaybackOutcome> {
     let histfile = ani_cli_histfile();
     let before_read = read_hist_map(&histfile);
@@ -327,8 +403,8 @@ fn run_with_global_tracking(
     let before = before_read.entries;
     let before_ordered = before_read.ordered_entries;
 
-    let status = run_cmd()?;
-    let success = status.success();
+    let exit = run_cmd()?;
+    let success = exit.status.success();
     let final_episode = if success {
         let after_read = read_hist_map(&histfile);
         emit_warnings(&after_read.warnings);
@@ -347,7 +423,7 @@ fn run_with_global_tracking(
     Ok(PlaybackOutcome {
         success,
         final_episode,
-        failure_detail: (!success).then(|| playback_failure_detail(&status)),
+        failure_detail: (!success).then(|| playback_failure_detail(&exit.status, &exit.stderr)),
     })
 }
 

@@ -148,17 +148,22 @@ pub(crate) fn ani_cli_v5_source_id(ani_id: &str) -> Option<&str> {
     .then_some(numeric_id)
 }
 
+/// Parse the episode labels from ani-cli 5's HiAnime episode-list response.
+///
+/// ani-cli intentionally consumes this HTML endpoint rather than a public JSON
+/// API. Keep this parser small and aligned with its `data-number` extraction so
+/// special labels (for example `13.5`) remain usable in AniTrack too.
 pub(crate) fn parse_ani_cli_v5_episode_labels(raw: &str) -> Option<Vec<String>> {
-    let value: Value = serde_json::from_str(raw).ok()?;
-    let items = value.get("episodes")?.as_array()?;
-    let mut episodes = items
-        .iter()
-        .filter_map(|item| match item.get("number")? {
-            Value::Number(number) => Some(number.to_string()),
-            Value::String(number) => Some(number.trim().to_string()),
-            _ => None,
-        })
+    // The endpoint sometimes embeds its attributes as escaped HTML. ani-cli
+    // removes those escapes before extracting `data-number`, so do the same.
+    let normalized = raw.replace(r#"\""#, "\"");
+    let mut episodes = normalized
+        .split("ep-item")
+        .skip(1)
+        .filter_map(|fragment| html_attribute(fragment, "data-number"))
+        .map(str::trim)
         .filter(|episode| !episode.is_empty())
+        .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
     if episodes.is_empty() {
         return None;
@@ -166,6 +171,17 @@ pub(crate) fn parse_ani_cli_v5_episode_labels(raw: &str) -> Option<Vec<String>> 
     episodes.sort_by(|left, right| compare_episode_labels(left, right));
     episodes.dedup_by(|left, right| episode_labels_match(left, right));
     Some(episodes)
+}
+
+fn html_attribute<'a>(fragment: &'a str, name: &str) -> Option<&'a str> {
+    let (_, value) = fragment.split_once(name)?;
+    let value = value.trim_start();
+    let value = value.strip_prefix('=')?.trim_start();
+    let quote = value.chars().next()?;
+    if quote != '\'' && quote != '"' {
+        return None;
+    }
+    value[quote.len_utf8()..].split(quote).next()
 }
 
 fn fetch_ani_cli_v5_episode_metadata(url: &str) -> Result<String, String> {
@@ -243,7 +259,10 @@ pub(crate) fn fetch_episode_labels_with_diagnostics(
     total_hint: Option<u32>,
 ) -> EpisodeLabelFetchOutcome {
     if let Some(source_id) = ani_cli_v5_source_id(ani_id) {
-        let url = format!("https://anidb.app/api/frontend/anime/{source_id}/episodes");
+        // ani-cli 5.1.x uses this HiAnime endpoint itself. The previously used
+        // anidb.app endpoint is unrelated to ani-cli's current history IDs and
+        // can return stale or incompatible labels.
+        let url = format!("https://hianime.at/api/theme/episode/list/{source_id}");
         return match fetch_ani_cli_v5_episode_metadata(&url) {
             Ok(raw) => match parse_ani_cli_v5_episode_labels(&raw) {
                 Some(episode_list) => EpisodeLabelFetchOutcome {
@@ -253,14 +272,14 @@ pub(crate) fn fetch_episode_labels_with_diagnostics(
                 None => EpisodeLabelFetchOutcome {
                     episode_list: fallback_numeric_episode_labels(total_hint),
                     warnings: vec![format!(
-                        "ani-cli 5 episode metadata response for {ani_id} did not contain usable episode labels"
+                        "ani-cli 5 HiAnime episode metadata response for {ani_id} did not contain usable episode labels"
                     )],
                 },
             },
             Err(err) => EpisodeLabelFetchOutcome {
                 episode_list: fallback_numeric_episode_labels(total_hint),
                 warnings: vec![format!(
-                    "ani-cli 5 episode metadata request failed for {ani_id}: {err}"
+                    "ani-cli 5 HiAnime episode metadata request failed for {ani_id}: {err}"
                 )],
             },
         };
