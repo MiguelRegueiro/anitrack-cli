@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-09-21
+
+### Fixed
+- Restored reliable ani-cli 5 episode playback by launching explicit episodes directly instead of depending on migrated history entries. This fixes Next, Replay, Previous, and TUI Select for affected shows.
+
 ## [0.1.10] - 2026-08-11
 
 ### Fixed
@@ -189,7 +194,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Right-side episode text now matches progress logic.
 - Polished modal styling/layout for delete confirmation and last-episode notice.
 
-[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/MiguelRegueiro/anitrack-cli/compare/v0.1.7...v0.1.8
